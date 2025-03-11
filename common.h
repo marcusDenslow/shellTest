@@ -20,6 +20,8 @@
 #include <ctype.h>    // For isprint
 #include <winerror.h>
 #include <winnt.h>
+#include <fcntl.h>    // For _O_BINARY
+#include <io.h>       // For _setmode, _fileno
 
 // Common defines
 #define LSH_RL_BUFSIZE 1024

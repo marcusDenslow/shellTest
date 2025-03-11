@@ -1059,3 +1059,9 @@ int lsh_help(char **args) {
 
   printf("Use the command for information on other programs.\n");
   return 1;
+}
+
+// Exit the shell
+int lsh_exit(char **args) {
+  return 0;
+}
