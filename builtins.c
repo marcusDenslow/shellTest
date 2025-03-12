@@ -6,6 +6,12 @@
 #include "builtins.h"
 #include "common.h"
 
+// History command implementation
+#define HISTORY_SIZE 10
+static char *command_history[HISTORY_SIZE] = {NULL};
+static int history_count = 0;  // Total number of commands entered
+static int history_index = 0;  // Current index in the circular buffer
+
 // Array of built-in command names
 char *builtin_str[] = {
   "cd",
@@ -22,6 +28,7 @@ char *builtin_str[] = {
   "touch",
   "pwd",
   "cat",
+  "history", // Added history command
 };
 
 // Array of built-in command function pointers
@@ -40,11 +47,62 @@ int (*builtin_func[]) (char **) = {
   &lsh_touch,
   &lsh_pwd,
   &lsh_cat,
+  &lsh_history, // Added history function pointer
 };
 
 // Return the number of built-in commands
 int lsh_num_builtins() {
   return sizeof(builtin_str) / sizeof(char *);
+}
+
+// Add function to store commands in history
+void lsh_add_to_history(const char *command) {
+    if (command == NULL || command[0] == '\0') {
+        return;  // Don't add empty commands
+    }
+    
+    // Free the string at the current index if it exists
+    if (command_history[history_index] != NULL) {
+        free(command_history[history_index]);
+    }
+    
+    // Save the current command
+    command_history[history_index] = _strdup(command);
+    
+    // Update index and count
+    history_index = (history_index + 1) % HISTORY_SIZE;
+    history_count++;
+}
+
+// Implement the history command
+int lsh_history(char **args) {
+    if (history_count == 0) {
+        printf("No commands in history\n");
+        return 1;
+    }
+    
+    // Calculate how many commands to display
+    int num_to_display = (history_count < HISTORY_SIZE) ? history_count : HISTORY_SIZE;
+    
+    // Calculate starting index and numbering
+    int start_idx, start_num;
+    if (history_count <= HISTORY_SIZE) {
+        // Haven't filled the buffer yet
+        start_idx = 0;
+        start_num = 1;
+    } else {
+        // Buffer is full, start from the oldest command
+        start_idx = history_index;  // Next slot to overwrite contains oldest command
+        start_num = history_count - HISTORY_SIZE + 1;
+    }
+    
+    // Display the commands
+    for (int i = 0; i < num_to_display; i++) {
+        int idx = (start_idx + i) % HISTORY_SIZE;
+        printf("%5d  %s\n", start_num + i, command_history[idx]);
+    }
+    
+    return 1;
 }
 
 // Print current working directory
@@ -1033,8 +1091,8 @@ int lsh_dir(char **args) {
       if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
         printf("<DIR>\t%s\n", findData.cFileName);
       } else {
-        // Print file name and size
-        printf("%u\t%s\n", findData.nFileSizeLow, findData.cFileName);
+        // Print file name and size - fixed format specifier
+        printf("%lu\t%s\n", findData.nFileSizeLow, findData.cFileName);
       }
     }
     printf("\n");

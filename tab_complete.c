@@ -190,7 +190,8 @@ void redraw_tab_suggestion(HANDLE hConsole, COORD promptEndPos,
     
     // Calculate where to position the cursor after displaying
     int prefixLen = strlen(last_tab_prefix);
-    int cursorPos = strlen(original_line) + strlen(tab_match);
+    // Remove unused variable
+    // int cursorPos = strlen(original_line) + strlen(tab_match);
     
     // Hide cursor during redraw to prevent flicker
     CONSOLE_CURSOR_INFO cursorInfo;
@@ -206,6 +207,11 @@ void redraw_tab_suggestion(HANDLE hConsole, COORD promptEndPos,
     
     // Move cursor to the beginning of line
     SetConsoleCursorPosition(hConsole, promptEndPos);
+    
+    // Prepare matchPrefix for display
+    char matchPrefix[1024] = "";
+    strncpy(matchPrefix, tab_match, prefixLen);
+    matchPrefix[prefixLen] = '\0';
     
     // Write the command prefix and matching part with normal attributes
     WriteConsole(hConsole, original_line, strlen(original_line), &numCharsWritten, NULL);
@@ -255,7 +261,7 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos, const ch
     word_start++; // Move past the space or backslash
     
     // Extract just the last word from the suggested path
-    char *lastWord = strrchr(suggestion, ' ');
+    const char *lastWord = strrchr(suggestion, ' ');
     if (lastWord) {
         lastWord++; // Move past the space
     } else {

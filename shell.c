@@ -88,14 +88,14 @@ void lsh_loop(void) {
                 
                 if (parent_dir != NULL) {
                     // We have at least two levels deep
-                    sprintf(prompt_path, "%s in %s\\%s", username, parent_dir + 1, last_dir_name);
+                    snprintf(prompt_path, sizeof(prompt_path), "%s in %s\\%s", username, parent_dir + 1, last_dir_name);
                 } else {
                     // We're at top level (like C:)
-                    sprintf(prompt_path, "%s in %s", username, last_dir_name);
+                    snprintf(prompt_path, sizeof(prompt_path), "%s in %s", username, last_dir_name);
                 }
             } else {
                 // No backslash found (rare case)
-                sprintf(prompt_path, "%s in %s", username, cwd);
+                snprintf(prompt_path, sizeof(prompt_path), "%s in %s", username, cwd);
             }
         }
         
@@ -103,6 +103,12 @@ void lsh_loop(void) {
         printf("%s> ", prompt_path);
         
         line = lsh_read_line();
+        
+        // Add command to history if not empty
+        if (line[0] != '\0') {
+            lsh_add_to_history(line);
+        }
+        
         args = lsh_split_line(line);
         status = lsh_execute(args);
         

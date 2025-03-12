@@ -415,7 +415,8 @@ char *lsh_read_line(void) {
                 }
                 
                 // Get the cursor position where it should end up (after suggestion, before indicator)
-                int cursorPos = strlen(displayBuffer);
+                // Remove unused variable
+                // int cursorPos = strlen(displayBuffer);
                 
                 // Add the indicator to the display buffer
                 strcat(displayBuffer, indicatorBuffer);
@@ -559,4 +560,3 @@ char **lsh_split_line(char *line) {
     tokens[position] = NULL;
     return tokens;
 }
-

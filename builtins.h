@@ -29,6 +29,10 @@ int lsh_del(char **args);
 int lsh_touch(char **args);
 int lsh_pwd(char **args);
 int lsh_cat(char **args);
+int lsh_history(char **args);
+
+// Add command to history
+void lsh_add_to_history(const char *command);
 
 // Get number of builtin commands
 int lsh_num_builtins(void);
