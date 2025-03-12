@@ -8,7 +8,14 @@
 
 // History command implementation
 #define HISTORY_SIZE 10
-static char *command_history[HISTORY_SIZE] = {NULL};
+
+// New struct to hold history entries with timestamps
+typedef struct {
+    char *command;
+    SYSTEMTIME timestamp;
+} HistoryEntry;
+
+static HistoryEntry command_history[HISTORY_SIZE] = {0};
 static int history_count = 0;  // Total number of commands entered
 static int history_index = 0;  // Current index in the circular buffer
 
@@ -55,26 +62,29 @@ int lsh_num_builtins() {
   return sizeof(builtin_str) / sizeof(char *);
 }
 
-// Add function to store commands in history
+// Add function to store commands in history with timestamps
 void lsh_add_to_history(const char *command) {
     if (command == NULL || command[0] == '\0') {
         return;  // Don't add empty commands
     }
     
     // Free the string at the current index if it exists
-    if (command_history[history_index] != NULL) {
-        free(command_history[history_index]);
+    if (command_history[history_index].command != NULL) {
+        free(command_history[history_index].command);
     }
     
     // Save the current command
-    command_history[history_index] = _strdup(command);
+    command_history[history_index].command = _strdup(command);
+    
+    // Save the current time
+    GetLocalTime(&command_history[history_index].timestamp);
     
     // Update index and count
     history_index = (history_index + 1) % HISTORY_SIZE;
     history_count++;
 }
 
-// Implement the history command
+// Implement the history command with timestamps
 int lsh_history(char **args) {
     if (history_count == 0) {
         printf("No commands in history\n");
@@ -84,22 +94,23 @@ int lsh_history(char **args) {
     // Calculate how many commands to display
     int num_to_display = (history_count < HISTORY_SIZE) ? history_count : HISTORY_SIZE;
     
-    // Calculate starting index and numbering
-    int start_idx, start_num;
+    // Calculate starting index
+    int start_idx;
     if (history_count <= HISTORY_SIZE) {
         // Haven't filled the buffer yet
         start_idx = 0;
-        start_num = 1;
     } else {
         // Buffer is full, start from the oldest command
         start_idx = history_index;  // Next slot to overwrite contains oldest command
-        start_num = history_count - HISTORY_SIZE + 1;
     }
     
-    // Display the commands
+    // Display the commands with timestamps
     for (int i = 0; i < num_to_display; i++) {
         int idx = (start_idx + i) % HISTORY_SIZE;
-        printf("%5d  %s\n", start_num + i, command_history[idx]);
+        SYSTEMTIME *ts = &command_history[idx].timestamp;
+        printf("[%02d:%02d:%02d] %s\n", 
+               ts->wHour, ts->wMinute, ts->wSecond, 
+               command_history[idx].command);
     }
     
     return 1;
@@ -1058,7 +1069,7 @@ int lsh_clear(char **args) {
   return 1;
 }
 
-// List directory contents
+// List directory contents with creation time and file type
 int lsh_dir(char **args) {
   char cwd[1024];
   WIN32_FIND_DATA findData;
@@ -1083,20 +1094,89 @@ int lsh_dir(char **args) {
     return 1;
   }
   
+  // Print current directory header
+  printf("Contents of directory: %s\n\n", cwd);
+  
+  // Define column widths for better alignment
+  const int timeColWidth = 20;
+  const int sizeColWidth = 15;
+  const int typeColWidth = 10;
+  const int nameColWidth = 30;
+  
+  // Print table header with ASCII characters
+  printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+         timeColWidth, "--------------------", 
+         sizeColWidth, "---------------", 
+         typeColWidth, "----------", 
+         nameColWidth, "------------------------------");
+         
+  printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+         timeColWidth-2, "Created", 
+         sizeColWidth-2, "Size", 
+         typeColWidth-2, "Type", 
+         nameColWidth-2, "Name");
+         
+  printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+         timeColWidth, "--------------------", 
+         sizeColWidth, "---------------", 
+         typeColWidth, "----------", 
+         nameColWidth, "------------------------------");
+  
   // List all files
   do {
     // Skip . and .. directories for cleaner output
     if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
+      // Convert file creation time to system time
+      SYSTEMTIME fileTime;
+      FileTimeToSystemTime(&findData.ftCreationTime, &fileTime);
+      
+      // Format creation time as string
+      char timeString[32];
+      sprintf(timeString, "%04d-%02d-%02d %02d:%02d:%02d", 
+              fileTime.wYear, fileTime.wMonth, fileTime.wDay,
+              fileTime.wHour, fileTime.wMinute, fileTime.wSecond);
+      
       // Check if it's a directory
+      const char* fileType = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "Directory" : "File";
+      
+      // Format size (only for files)
+      char sizeString[32];
       if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-        printf("<DIR>\t%s\n", findData.cFileName);
+        strcpy(sizeString, "-");
       } else {
-        // Print file name and size - fixed format specifier
-        printf("%lu\t%s\n", findData.nFileSizeLow, findData.cFileName);
+        // Format size with commas for better readability
+        if (findData.nFileSizeLow < 1024) {
+          sprintf(sizeString, "%lu B", findData.nFileSizeLow);
+        } else if (findData.nFileSizeLow < 1024 * 1024) {
+          sprintf(sizeString, "%.1f KB", findData.nFileSizeLow / 1024.0);
+        } else {
+          sprintf(sizeString, "%.1f MB", findData.nFileSizeLow / (1024.0 * 1024.0));
+        }
       }
+      
+      // Truncate filename if too long
+      char truncName[nameColWidth];
+      strncpy(truncName, findData.cFileName, nameColWidth-3);
+      truncName[nameColWidth-3] = '\0';
+      if (strlen(findData.cFileName) > nameColWidth-3) {
+        strcat(truncName, "...");
+      }
+      
+      // Print formatted line with table borders
+      printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+             timeColWidth-2, timeString, 
+             sizeColWidth-2, sizeString, 
+             typeColWidth-2, fileType, 
+             nameColWidth-2, truncName);
     }
-    printf("\n");
   } while (FindNextFile(hFind, &findData));
+  
+  // Print table footer
+  printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+         timeColWidth, "--------------------", 
+         sizeColWidth, "---------------", 
+         typeColWidth, "----------", 
+         nameColWidth, "------------------------------");
   
   // Close find handle
   FindClose(hFind);
