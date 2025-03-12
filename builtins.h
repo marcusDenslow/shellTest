@@ -32,6 +32,7 @@ int lsh_cat(char **args);
 int lsh_history(char **args);
 int lsh_copy(char **args);
 int lsh_paste(char **args);
+int lsh_move(char **args);
 
 // Add command to history
 void lsh_add_to_history(const char *command);
