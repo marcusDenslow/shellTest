@@ -5,6 +5,13 @@
 
 #include "builtins.h"
 #include "common.h"
+#include <stdio.h>
+#include <ShlObj.h>
+#include <ole2.h>
+#include <olectl.h>
+#include <wincrypt.h>
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "shell32.lib")
 
 // History command implementation
 #define HISTORY_SIZE 10
@@ -35,7 +42,10 @@ char *builtin_str[] = {
   "touch",
   "pwd",
   "cat",
-  "history", // Added history command
+  "history", 
+  "copy",
+  "cp",
+  "paste",
 };
 
 // Array of built-in command function pointers
@@ -54,7 +64,10 @@ int (*builtin_func[]) (char **) = {
   &lsh_touch,
   &lsh_pwd,
   &lsh_cat,
-  &lsh_history, // Added history function pointer
+  &lsh_history, 
+  &lsh_copy,
+  &lsh_copy,
+  &lsh_paste,
 };
 
 // Return the number of built-in commands
@@ -1197,6 +1210,241 @@ int lsh_help(char **args) {
 
   printf("Use the command for information on other programs.\n");
   return 1;
+}
+
+static char *copied_file_path = NULL;
+static char *copied_file_name = NULL;
+
+
+/**
+ * Copy a file for later pasting with optional raw content copy to clipboard
+ */
+int lsh_copy(char **args) {
+    if (args[1] == NULL) {
+        fprintf(stderr, "lsh: expected file argument to \"copy\"\n");
+        fprintf(stderr, "Usage: copy [OPTION] FILE\n");
+        fprintf(stderr, "Options:\n");
+        fprintf(stderr, "  -raw    Copy file contents to clipboard instead of the file itself\n");
+        return 1;
+    }
+
+    // Check for -raw flag
+    int raw_mode = 0;
+    char *filename = args[1];
+    
+    if (strcmp(args[1], "-raw") == 0) {
+        raw_mode = 1;
+        
+        if (args[2] == NULL) {
+            fprintf(stderr, "lsh: expected file argument after -raw\n");
+            return 1;
+        }
+        
+        filename = args[2];
+    }
+    
+    // Check if file exists
+    FILE *file = fopen(filename, "rb");
+    if (file == NULL) {
+        fprintf(stderr, "lsh: cannot find '%s': ", filename);
+        perror("");
+        return 1;
+    }
+    
+    // Get file size
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    
+    if (raw_mode) {
+        // RAW MODE: Copy file contents to clipboard
+        
+        // Read file content
+        char *file_content = (char*)malloc(file_size + 1);
+        if (!file_content) {
+            fprintf(stderr, "lsh: failed to allocate memory for file content\n");
+            fclose(file);
+            return 1;
+        }
+        
+        size_t bytes_read = fread(file_content, 1, file_size, file);
+        file_content[bytes_read] = '\0';  // Null-terminate the string
+        fclose(file);
+        
+        // Allocate global memory for clipboard
+        HGLOBAL h_mem = GlobalAlloc(GMEM_MOVEABLE, bytes_read + 1);
+        if (h_mem == NULL) {
+            fprintf(stderr, "lsh: failed to allocate global memory for clipboard\n");
+            free(file_content);
+            return 1;
+        }
+        
+        // Lock the memory and copy file content
+        char *clipboard_content = (char*)GlobalLock(h_mem);
+        if (clipboard_content == NULL) {
+            fprintf(stderr, "lsh: failed to lock global memory\n");
+            GlobalFree(h_mem);
+            free(file_content);
+            return 1;
+        }
+        
+        memcpy(clipboard_content, file_content, bytes_read);
+        clipboard_content[bytes_read] = '\0';  // Null-terminate the string
+        GlobalUnlock(h_mem);
+        
+        // Open clipboard and set data
+        if (!OpenClipboard(NULL)) {
+            fprintf(stderr, "lsh: failed to open clipboard\n");
+            GlobalFree(h_mem);
+            free(file_content);
+            return 1;
+        }
+        
+        EmptyClipboard();
+        HANDLE h_clipboard_data = SetClipboardData(CF_TEXT, h_mem);
+        CloseClipboard();
+        
+        if (h_clipboard_data == NULL) {
+            fprintf(stderr, "lsh: failed to set clipboard data\n");
+            GlobalFree(h_mem);
+            free(file_content);
+            return 1;
+        }
+        
+        // Don't free h_mem here - Windows takes ownership of it
+        free(file_content);
+        
+        printf("Copied contents of '%s' to clipboard (%ld bytes)\n", filename, bytes_read);
+    } else {
+        // NORMAL MODE: Copy file for internal paste operation
+        fclose(file);  // We don't need the file content for this mode
+        
+        // Get full path
+        char fullPath[1024];
+        if (_fullpath(fullPath, filename, sizeof(fullPath)) == NULL) {
+            fprintf(stderr, "lsh: failed to get full path for '%s'\n", filename);
+            return 1;
+        }
+        
+        // Extract just the filename from the path
+        char *fileBaseName = filename;
+        char *lastSlash = strrchr(filename, '\\');
+        if (lastSlash != NULL) {
+            fileBaseName = lastSlash + 1;
+        }
+        
+        // Free previous copied file info if any
+        if (copied_file_path != NULL) {
+            free(copied_file_path);
+            copied_file_path = NULL;
+        }
+        if (copied_file_name != NULL) {
+            free(copied_file_name);
+            copied_file_name = NULL;
+        }
+        
+        // Store the file path and name
+        copied_file_path = _strdup(fullPath);
+        copied_file_name = _strdup(fileBaseName);
+        
+        if (copied_file_path == NULL || copied_file_name == NULL) {
+            fprintf(stderr, "lsh: memory allocation error\n");
+            if (copied_file_path != NULL) {
+                free(copied_file_path);
+                copied_file_path = NULL;
+            }
+            if (copied_file_name != NULL) {
+                free(copied_file_name);
+                copied_file_name = NULL;
+            }
+            return 1;
+        }
+        
+        printf("Copied '%s' - ready for pasting with the 'paste' command\n", fileBaseName);
+    }
+    
+}
+
+/**
+ * Paste a previously copied file into the current directory
+ */
+int lsh_paste(char **args) {
+    if (copied_file_path == NULL || copied_file_name == NULL) {
+        fprintf(stderr, "lsh: no file has been copied\n");
+        return 1;
+    }
+
+    // Construct destination path (current directory + filename)
+    char destPath[1024];
+    if (_getcwd(destPath, sizeof(destPath)) == NULL) {
+        fprintf(stderr, "lsh: failed to get current directory\n");
+        return 1;
+    }
+
+    // Add backslash if needed
+    size_t len = strlen(destPath);
+    if (len > 0 && destPath[len - 1] != '\\') {
+        strcat(destPath, "\\");
+    }
+    strcat(destPath, copied_file_name);
+
+    // Check if source and destination are the same
+    if (strcmp(copied_file_path, destPath) == 0) {
+        fprintf(stderr, "lsh: source and destination are the same file\n");
+        return 1;
+    }
+
+    // Check if destination file already exists
+    FILE *destFile = fopen(destPath, "rb");
+    if (destFile != NULL) {
+        fclose(destFile);
+        char response[10];
+        printf("File '%s' already exists. Overwrite? (y/n): ", copied_file_name);
+        if (fgets(response, sizeof(response), stdin) == NULL || (response[0] != 'y' && response[0] != 'Y')) {
+            printf("Paste canceled\n");
+            return 1;
+        }
+    }
+
+    // Open source file
+    FILE *sourceFile = fopen(copied_file_path, "rb");
+    if (sourceFile == NULL) {
+        fprintf(stderr, "lsh: cannot open source file '%s': ", copied_file_path);
+        perror("");
+        return 1;
+    }
+
+    // Open destination file
+    destFile = fopen(destPath, "wb");
+    if (destFile == NULL) {
+        fprintf(stderr, "lsh: cannot create destination file '%s': ", destPath);
+        perror("");
+        fclose(sourceFile);
+        return 1;
+    }
+
+    // Copy the file contents
+    char buffer[4096];
+    size_t bytesRead;
+    size_t totalBytes = 0;
+
+    while ((bytesRead = fread(buffer, 1, sizeof(buffer), sourceFile)) > 0) {
+        size_t bytesWritten = fwrite(buffer, 1, bytesRead, destFile);
+        if (bytesWritten != bytesRead) {
+            fprintf(stderr, "lsh: error writing to '%s'\n", destPath);
+            fclose(sourceFile);
+            fclose(destFile);
+            return 1;
+        }
+        totalBytes += bytesRead;
+    }
+
+    // Close files
+    fclose(sourceFile);
+    fclose(destFile);
+
+    printf("Pasted '%s' (%zu bytes)\n", copied_file_name, totalBytes);
+    return 1;
 }
 
 // Exit the shell
