@@ -1092,117 +1092,440 @@ return 1;
 
 // List directory contents with creation time and file type
 int lsh_dir(char **args) {
-char cwd[1024];
-WIN32_FIND_DATA findData;
-HANDLE hFind;
-
-// Get current directory
-if (_getcwd(cwd, sizeof(cwd)) == NULL) {
-  perror("lsh");
-  return 1;
-}
-
-// Prepare search pattern for all files
-char searchPath[1024];
-strcpy(searchPath, cwd);
-strcat(searchPath, "\\*");
-
-// Find first file
-hFind = FindFirstFile(searchPath, &findData);
-
-if (hFind == INVALID_HANDLE_VALUE) {
-  fprintf(stderr, "lsh: Failed to list directory contents\n");
-  return 1;
-}
-
-// Print current directory header
-printf("Contents of directory: %s\n\n", cwd);
-
-// Define column widths for better alignment
-const int timeColWidth = 20;
-const int sizeColWidth = 15;
-const int typeColWidth = 10;
-const int nameColWidth = 30;
-
-// Print table header with ASCII characters
-printf("+%.*s+%.*s+%.*s+%.*s+\n", 
-       timeColWidth, "--------------------", 
-       sizeColWidth, "---------------", 
-       typeColWidth, "----------", 
-       nameColWidth, "------------------------------");
-       
-printf("| %-*s | %-*s | %-*s | %-*s |\n", 
-       timeColWidth-2, "Created", 
-       sizeColWidth-2, "Size", 
-       typeColWidth-2, "Type", 
-       nameColWidth-2, "Name");
-       
-printf("+%.*s+%.*s+%.*s+%.*s+\n", 
-       timeColWidth, "--------------------", 
-       sizeColWidth, "---------------", 
-       typeColWidth, "----------", 
-       nameColWidth, "------------------------------");
-
-// List all files
-do {
-  // Skip . and .. directories for cleaner output
-  if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
-    // Convert file creation time to system time
-    SYSTEMTIME fileTime;
-    FileTimeToSystemTime(&findData.ftCreationTime, &fileTime);
+    char cwd[1024];
+    WIN32_FIND_DATA findData;
+    HANDLE hFind;
     
-    // Format creation time as string
-    char timeString[32];
-    sprintf(timeString, "%04d-%02d-%02d %02d:%02d:%02d", 
-            fileTime.wYear, fileTime.wMonth, fileTime.wDay,
-            fileTime.wHour, fileTime.wMinute, fileTime.wSecond);
+    // Define column widths for better alignment
+    const int timeColWidth = 20;
+    const int sizeColWidth = 15;
+    const int typeColWidth = 10;
+    const int nameColWidth = 30;
     
-    // Check if it's a directory
-    const char* fileType = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "Directory" : "File";
+    // Get console size to determine if headers should be at bottom
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    GetConsoleScreenBufferInfo(hConsole, &csbi);
+    int consoleHeight = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
     
-    // Format size (only for files)
-    char sizeString[32];
-    if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-      strcpy(sizeString, "-");
+    // Get current directory
+    if (_getcwd(cwd, sizeof(cwd)) == NULL) {
+        perror("lsh");
+        return 1;
+    }
+    
+    // Prepare search pattern for all files
+    char searchPath[1024];
+    strcpy(searchPath, cwd);
+    strcat(searchPath, "\\*");
+    
+    // First pass to count files and estimate display size
+    int fileCount = 0;
+    hFind = FindFirstFile(searchPath, &findData);
+    
+    if (hFind == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "lsh: Failed to list directory contents\n");
+        return 1;
+    }
+    
+    do {
+        // Skip . and .. directories for cleaner output
+        if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
+            fileCount++;
+        }
+    } while (FindNextFile(hFind, &findData));
+    
+    FindClose(hFind);
+    
+    // Determine if we need to put headers at bottom (estimate if list is longer than console)
+    // Each file takes 1 line, the headers and footers take 5 lines total
+    // Add a buffer of a few lines to account for prompt and other output
+    int estimatedLinesNeeded = fileCount + 8;
+    int headersAtBottom = (estimatedLinesNeeded > consoleHeight);
+    
+    // Structure to store file info for delayed printing
+    typedef struct {
+        char timeString[32];
+        char sizeString[32];
+        char fileType[16];
+        char fileName[MAX_PATH];
+    } FileInfo;
+    
+    FileInfo *fileInfoArray = NULL;
+    int fileInfoIndex = 0;
+    
+    if (headersAtBottom) {
+        // Allocate array to store file info for delayed printing
+        fileInfoArray = (FileInfo*)malloc(sizeof(FileInfo) * fileCount);
+        if (!fileInfoArray) {
+            fprintf(stderr, "lsh: allocation error\n");
+            return 1;
+        }
     } else {
-      // Format size with commas for better readability
-      if (findData.nFileSizeLow < 1024) {
-        sprintf(sizeString, "%lu B", findData.nFileSizeLow);
-      } else if (findData.nFileSizeLow < 1024 * 1024) {
-        sprintf(sizeString, "%.1f KB", findData.nFileSizeLow / 1024.0);
-      } else {
-        sprintf(sizeString, "%.1f MB", findData.nFileSizeLow / (1024.0 * 1024.0));
-      }
+        // Print directory header immediately if not deferring
+        printf("Contents of directory: %s\n\n", cwd);
+        
+        // Print table header with ASCII characters
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+            
+        printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+            timeColWidth-2, "Created", 
+            sizeColWidth-2, "Size", 
+            typeColWidth-2, "Type", 
+            nameColWidth-2, "Name");
+            
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+    }
+ // List directory contents with creation time and file type
+int lsh_dir(char **args) {
+    char cwd[1024];
+    WIN32_FIND_DATA findData;
+    HANDLE hFind;
+    
+    // Define column widths for better alignment
+    const int timeColWidth = 20;
+    const int sizeColWidth = 15;
+    const int typeColWidth = 10;
+    const int nameColWidth = 30;
+    
+    // Get console size to determine if headers should be at bottom
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    GetConsoleScreenBufferInfo(hConsole, &csbi);
+    int consoleHeight = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    
+    // Get current directory
+    if (_getcwd(cwd, sizeof(cwd)) == NULL) {
+        perror("lsh");
+        return 1;
     }
     
-    // Truncate filename if too long
-    char truncName[nameColWidth];
-    strncpy(truncName, findData.cFileName, nameColWidth-3);
-    truncName[nameColWidth-3] = '\0';
-    if (strlen(findData.cFileName) > nameColWidth-3) {
-      strcat(truncName, "...");
+    // Prepare search pattern for all files
+    char searchPath[1024];
+    strcpy(searchPath, cwd);
+    strcat(searchPath, "\\*");
+    
+    // First pass to count files and estimate display size
+    int fileCount = 0;
+    hFind = FindFirstFile(searchPath, &findData);
+    
+    if (hFind == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "lsh: Failed to list directory contents\n");
+        return 1;
     }
     
-    // Print formatted line with table borders
-    printf("| %-*s | %-*s | %-*s | %-*s |\n", 
-           timeColWidth-2, timeString, 
-           sizeColWidth-2, sizeString, 
-           typeColWidth-2, fileType, 
-           nameColWidth-2, truncName);
-  }
-} while (FindNextFile(hFind, &findData));
+    do {
+        // Skip . and .. directories for cleaner output
+        if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
+            fileCount++;
+        }
+    } while (FindNextFile(hFind, &findData));
+    
+    FindClose(hFind);
+    
+    // Determine if we need to put headers at bottom (estimate if list is longer than console)
+    // Each file takes 1 line, the headers and footers take 5 lines total
+    // Add a buffer of a few lines to account for prompt and other output
+    int estimatedLinesNeeded = fileCount + 8;
+    int headersAtBottom = (estimatedLinesNeeded > consoleHeight);
+    
+    // Structure to store file info for delayed printing
+    typedef struct {
+        char timeString[32];
+        char sizeString[32];
+        char fileType[16];
+        char fileName[MAX_PATH];
+    } FileInfo;
+    
+    FileInfo *fileInfoArray = NULL;
+    int fileInfoIndex = 0;
+    
+    if (headersAtBottom) {
+        // Allocate array to store file info for delayed printing
+        fileInfoArray = (FileInfo*)malloc(sizeof(FileInfo) * fileCount);
+        if (!fileInfoArray) {
+            fprintf(stderr, "lsh: allocation error\n");
+            return 1;
+        }
+    } else {
+        // Print directory header immediately if not deferring
+        printf("Contents of directory: %s\n\n", cwd);
+        
+        // Print table header with ASCII characters
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+            
+        printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+            timeColWidth-2, "Created", 
+            sizeColWidth-2, "Size", 
+            typeColWidth-2, "Type", 
+            nameColWidth-2, "Name");
+            
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+    }
+    
+    // Second pass to actually process and display files
+    hFind = FindFirstFile(searchPath, &findData);
+    
+    if (hFind == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "lsh: Failed to list directory contents\n");
+        if (headersAtBottom && fileInfoArray) {
+            free(fileInfoArray);
+        }
+        return 1;
+    }
 
-// Print table footer
-printf("+%.*s+%.*s+%.*s+%.*s+\n", 
-       timeColWidth, "--------------------", 
-       sizeColWidth, "---------------", 
-       typeColWidth, "----------", 
-       nameColWidth, "------------------------------");
+    // List all files
+    do {
+        // Skip . and .. directories for cleaner output
+        if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
+            // Convert file creation time to system time
+            SYSTEMTIME fileTime;
+            FileTimeToSystemTime(&findData.ftCreationTime, &fileTime);
+            
+            // Format creation time as string
+            char timeString[32];
+            sprintf(timeString, "%04d-%02d-%02d %02d:%02d:%02d", 
+                    fileTime.wYear, fileTime.wMonth, fileTime.wDay,
+                    fileTime.wHour, fileTime.wMinute, fileTime.wSecond);
+            
+            // Check if it's a directory
+            const char* fileType = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "Directory" : "File";
+            
+            // Format size (only for files)
+            char sizeString[32];
+            if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                strcpy(sizeString, "-");
+            } else {
+                // Format size with commas for better readability
+                if (findData.nFileSizeLow < 1024) {
+                    sprintf(sizeString, "%lu B", findData.nFileSizeLow);
+                } else if (findData.nFileSizeLow < 1024 * 1024) {
+                    sprintf(sizeString, "%.1f KB", findData.nFileSizeLow / 1024.0);
+                } else {
+                    sprintf(sizeString, "%.1f MB", findData.nFileSizeLow / (1024.0 * 1024.0));
+                }
+            }
+            
+            // Truncate filename if too long
+            char truncName[nameColWidth];
+            strncpy(truncName, findData.cFileName, nameColWidth-3);
+            truncName[nameColWidth-3] = '\0';
+            if (strlen(findData.cFileName) > nameColWidth-3) {
+                strcat(truncName, "...");
+            }
+            
+            if (headersAtBottom) {
+                // Store in array for delayed printing
+                strcpy(fileInfoArray[fileInfoIndex].timeString, timeString);
+                strcpy(fileInfoArray[fileInfoIndex].sizeString, sizeString);
+                strcpy(fileInfoArray[fileInfoIndex].fileType, fileType);
+                strcpy(fileInfoArray[fileInfoIndex].fileName, truncName);
+                fileInfoIndex++;
+            } else {
+                // Print formatted line with table borders
+                printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+                    timeColWidth-2, timeString, 
+                    sizeColWidth-2, sizeString, 
+                    typeColWidth-2, fileType, 
+                    nameColWidth-2, truncName);
+            }
+        }
+    } while (FindNextFile(hFind, &findData));
 
-// Close find handle
-FindClose(hFind);
+    // Close find handle
+    FindClose(hFind);
+    
+    if (!headersAtBottom) {
+        // If headers were at top, print footer
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+    } else {
+        // Print headers at bottom followed by file information
+        printf("Contents of directory: %s\n\n", cwd);
+        
+        // Print table header with ASCII characters
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+            
+        printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+            timeColWidth-2, "Created", 
+            sizeColWidth-2, "Size", 
+            typeColWidth-2, "Type", 
+            nameColWidth-2, "Name");
+            
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+        
+        // Print all stored file information
+        for (int i = 0; i < fileInfoIndex; i++) {
+            printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+                timeColWidth-2, fileInfoArray[i].timeString, 
+                sizeColWidth-2, fileInfoArray[i].sizeString, 
+                typeColWidth-2, fileInfoArray[i].fileType, 
+                nameColWidth-2, fileInfoArray[i].fileName);
+        }
+        
+        // Print footer
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+        
+        // Clean up
+        free(fileInfoArray);
+    }
 
-return 1;
+    return 1;
+}   
+    // Second pass to actually process and display files
+    hFind = FindFirstFile(searchPath, &findData);
+    
+    if (hFind == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "lsh: Failed to list directory contents\n");
+        if (headersAtBottom && fileInfoArray) {
+            free(fileInfoArray);
+        }
+        return 1;
+    }
+
+    // List all files
+    do {
+        // Skip . and .. directories for cleaner output
+        if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
+            // Convert file creation time to system time
+            SYSTEMTIME fileTime;
+            FileTimeToSystemTime(&findData.ftCreationTime, &fileTime);
+            
+            // Format creation time as string
+            char timeString[32];
+            sprintf(timeString, "%04d-%02d-%02d %02d:%02d:%02d", 
+                    fileTime.wYear, fileTime.wMonth, fileTime.wDay,
+                    fileTime.wHour, fileTime.wMinute, fileTime.wSecond);
+            
+            // Check if it's a directory
+            const char* fileType = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "Directory" : "File";
+            
+            // Format size (only for files)
+            char sizeString[32];
+            if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                strcpy(sizeString, "-");
+            } else {
+                // Format size with commas for better readability
+                if (findData.nFileSizeLow < 1024) {
+                    sprintf(sizeString, "%lu B", findData.nFileSizeLow);
+                } else if (findData.nFileSizeLow < 1024 * 1024) {
+                    sprintf(sizeString, "%.1f KB", findData.nFileSizeLow / 1024.0);
+                } else {
+                    sprintf(sizeString, "%.1f MB", findData.nFileSizeLow / (1024.0 * 1024.0));
+                }
+            }
+            
+            // Truncate filename if too long
+            char truncName[nameColWidth];
+            strncpy(truncName, findData.cFileName, nameColWidth-3);
+            truncName[nameColWidth-3] = '\0';
+            if (strlen(findData.cFileName) > nameColWidth-3) {
+                strcat(truncName, "...");
+            }
+            
+            if (headersAtBottom) {
+                // Store in array for delayed printing
+                strcpy(fileInfoArray[fileInfoIndex].timeString, timeString);
+                strcpy(fileInfoArray[fileInfoIndex].sizeString, sizeString);
+                strcpy(fileInfoArray[fileInfoIndex].fileType, fileType);
+                strcpy(fileInfoArray[fileInfoIndex].fileName, truncName);
+                fileInfoIndex++;
+            } else {
+                // Print formatted line with table borders
+                printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+                    timeColWidth-2, timeString, 
+                    sizeColWidth-2, sizeString, 
+                    typeColWidth-2, fileType, 
+                    nameColWidth-2, truncName);
+            }
+        }
+    } while (FindNextFile(hFind, &findData));
+
+    // Close find handle
+    FindClose(hFind);
+    
+    if (!headersAtBottom) {
+        // If headers were at top, print footer
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+    } else {
+        // Print headers at bottom followed by file information
+        printf("Contents of directory: %s\n\n", cwd);
+        
+        // Print table header with ASCII characters
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+            
+        printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+            timeColWidth-2, "Created", 
+            sizeColWidth-2, "Size", 
+            typeColWidth-2, "Type", 
+            nameColWidth-2, "Name");
+            
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+        
+        // Print all stored file information
+        for (int i = 0; i < fileInfoIndex; i++) {
+            printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+                timeColWidth-2, fileInfoArray[i].timeString, 
+                sizeColWidth-2, fileInfoArray[i].sizeString, 
+                typeColWidth-2, fileInfoArray[i].fileType, 
+                nameColWidth-2, fileInfoArray[i].fileName);
+        }
+        
+        // Print footer
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            timeColWidth, "--------------------", 
+            sizeColWidth, "---------------", 
+            typeColWidth, "----------", 
+            nameColWidth, "------------------------------");
+        
+        // Clean up
+        free(fileInfoArray);
+    }
+
+    return 1;
 }
 
 // Display help

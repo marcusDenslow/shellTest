@@ -100,7 +100,9 @@ char *lsh_read_line(void) {
                 currentWord[position - word_start] = '\0';
                 
                 // Only display the suggestion if it starts with what we're typing
-                if (strncmp(lastWord, currentWord, strlen(currentWord)) == 0) {
+                // and hasn't been completely typed already
+                if (strncmp(lastWord, currentWord, strlen(currentWord)) == 0 && 
+                    strcmp(lastWord, currentWord) != 0) {
                     // Set text color to gray for suggestion
                     SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
                     // Print only the part of the suggestion that hasn't been typed yet
@@ -153,6 +155,9 @@ char *lsh_read_line(void) {
                 // Insert the selected match into buffer
                 char *current_match = tab_matches[tab_index];
                 
+                // Check if the match is already fully typed out
+                int already_typed = (strcmp(buffer + word_start, current_match) == 0);
+                
                 // Replace partial path with current match
                 strcpy(buffer + word_start, current_match);
                 position = word_start + strlen(current_match);
@@ -166,6 +171,13 @@ char *lsh_read_line(void) {
                 tab_num_matches = 0;
                 tab_index = 0;
                 last_tab_prefix[0] = '\0';
+                
+                // If the match was already fully typed, execute immediately
+                if (already_typed) {
+                    putchar('\n');  // Echo newline
+                    buffer[position] = '\0';
+                    return buffer;
+                }
                 
                 // Hide cursor to prevent flicker
                 CONSOLE_CURSOR_INFO cursorInfo;
@@ -218,6 +230,17 @@ char *lsh_read_line(void) {
                 char currentWord[1024] = "";
                 strncpy(currentWord, buffer + word_start, position - word_start);
                 currentWord[position - word_start] = '\0';
+                
+                // Check if the user has already completely typed the suggestion
+                if (strcmp(currentWord, lastWord) == 0) {
+                    // User has already typed the complete suggestion, execute immediately
+                    putchar('\n');  // Echo newline
+                    buffer[position] = '\0';
+                    free(suggestion);
+                    suggestion = NULL;
+                    showing_suggestion = 0;
+                    return buffer;
+                }
                 
                 // Get current cursor position
                 GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
@@ -353,8 +376,11 @@ char *lsh_read_line(void) {
                 // Reset tab index
                 tab_index = 0;
                 
+                // Check if this is the first word (command)
+                int is_first_word = (tab_word_start == 0);
+                
                 // Find matches for the new prefix
-                tab_matches = find_matches(partial_path, &tab_num_matches);
+                tab_matches = find_matches(partial_path, is_first_word, &tab_num_matches);
                 
                 // If no matches, don't do anything
                 if (!tab_matches || tab_num_matches == 0) {

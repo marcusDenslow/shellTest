@@ -4,11 +4,12 @@
  */
 
 #include "tab_complete.h"
+#include "builtins.h"  // Added to access builtin_str[]
 
 /**
- * Find matching files/directories for tab completion
+ * Find matching files/directories or commands for tab completion
  */
-char **find_matches(const char *partial_path, int *num_matches) {
+char **find_matches(const char *partial_text, int is_first_word, int *num_matches) {
     char cwd[1024];
     char search_dir[1024] = "";
     char search_pattern[256] = "";
@@ -23,12 +24,41 @@ char **find_matches(const char *partial_path, int *num_matches) {
         return NULL;
     }
     
+    // If it's the first word, try to match against commands first
+    if (is_first_word) {
+        // Loop through all built-in commands
+        for (int i = 0; i < lsh_num_builtins(); i++) {
+            // Check if command starts with the partial_text
+            if (strncmp(builtin_str[i], partial_text, strlen(partial_text)) == 0) {
+                // Add command to matches
+                if (*num_matches >= matches_capacity) {
+                    matches_capacity *= 2;
+                    matches = (char**)realloc(matches, sizeof(char*) * matches_capacity);
+                    if (!matches) {
+                        fprintf(stderr, "lsh: allocation error in tab completion\n");
+                        return NULL;
+                    }
+                }
+                
+                matches[*num_matches] = _strdup(builtin_str[i]);
+                (*num_matches)++;
+            }
+        }
+        
+        // If we found command matches, return them
+        if (*num_matches > 0) {
+            return matches;
+        }
+        
+        // Otherwise, fall back to file/directory matching
+    }
+    
     // Parse the partial path to separate directory and pattern
-    char *last_slash = strrchr(partial_path, '\\');
+    char *last_slash = strrchr(partial_text, '\\');
     if (last_slash) {
         // There's a directory part
-        int dir_len = last_slash - partial_path + 1;
-        strncpy(search_dir, partial_path, dir_len);
+        int dir_len = last_slash - partial_text + 1;
+        strncpy(search_dir, partial_text, dir_len);
         search_dir[dir_len] = '\0';
         strcpy(search_pattern, last_slash + 1);
     } else {
@@ -36,7 +66,7 @@ char **find_matches(const char *partial_path, int *num_matches) {
         _getcwd(cwd, sizeof(cwd));
         strcpy(search_dir, cwd);
         strcat(search_dir, "\\");
-        strcpy(search_pattern, partial_path);
+        strcpy(search_pattern, partial_text);
     }
     
     // Prepare for file searching
@@ -72,13 +102,8 @@ char **find_matches(const char *partial_path, int *num_matches) {
                 }
             }
             
+            // Just copy the filename without adding backslash for directories
             matches[*num_matches] = _strdup(findData.cFileName);
-            if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                // Append a backslash to directory names
-                size_t len = strlen(matches[*num_matches]);
-                matches[*num_matches] = (char*)realloc(matches[*num_matches], len + 2);
-                strcat(matches[*num_matches], "\\");
-            }
             (*num_matches)++;
         }
     } while (FindNextFile(hFind, &findData));
@@ -111,9 +136,12 @@ char* find_best_match(const char* partial_text) {
     // Skip if we're not typing a path
     if (strlen(partial_path) == 0) return NULL;
     
+    // Check if this is the first word (command)
+    int is_first_word = (word_start == 0);
+    
     // Find matches
     int num_matches;
-    char **matches = find_matches(partial_path, &num_matches);
+    char **matches = find_matches(partial_path, is_first_word, &num_matches);
     
     if (matches && num_matches > 0) {
         // Create the full suggestion by combining the prefix with the matched path

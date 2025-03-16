@@ -9,13 +9,14 @@
 #include "common.h"
 
 /**
- * Find matching files/directories for tab completion
+ * Find matching files/directories or commands for tab completion
  * 
- * @param partial_path The partial path to match
+ * @param partial_text The partial text to match
+ * @param is_first_word Flag indicating if this is the first word (command)
  * @param num_matches Pointer to store number of matches found
  * @return Array of matching strings (must be freed by caller)
  */
-char **find_matches(const char *partial_path, int *num_matches);
+char **find_matches(const char *partial_text, int is_first_word, int *num_matches);
 
 /**
  * Find the best matching file/directory for current input
