@@ -28,8 +28,8 @@ char **find_matches(const char *partial_text, int is_first_word, int *num_matche
     if (is_first_word) {
         // Loop through all built-in commands
         for (int i = 0; i < lsh_num_builtins(); i++) {
-            // Check if command starts with the partial_text
-            if (strncmp(builtin_str[i], partial_text, strlen(partial_text)) == 0) {
+            // Check if command starts with the partial_text (case insensitive)
+            if (_strnicmp(builtin_str[i], partial_text, strlen(partial_text)) == 0) {
                 // Add command to matches
                 if (*num_matches >= matches_capacity) {
                     matches_capacity *= 2;
@@ -89,8 +89,8 @@ char **find_matches(const char *partial_text, int is_first_word, int *num_matche
             continue;
         }
         
-        // Check if file matches our pattern
-        if (strncmp(findData.cFileName, search_pattern, strlen(search_pattern)) == 0) {
+        // Check if file matches our pattern (case insensitive)
+        if (_strnicmp(findData.cFileName, search_pattern, strlen(search_pattern)) == 0) {
             // Add to matches
             if (*num_matches >= matches_capacity) {
                 matches_capacity *= 2;
@@ -301,8 +301,8 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos, const ch
     strncpy(currentWord, buffer + word_start, position - word_start);
     currentWord[position - word_start] = '\0';
     
-    // Only display if suggestion starts with what we're typing
-    if (strncmp(lastWord, currentWord, strlen(currentWord)) != 0) {
+    // Only display if suggestion starts with what we're typing (case insensitive)
+    if (_strnicmp(lastWord, currentWord, strlen(currentWord)) != 0) {
         return;
     }
     

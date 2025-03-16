@@ -99,10 +99,10 @@ char *lsh_read_line(void) {
                 strncpy(currentWord, buffer + word_start, position - word_start);
                 currentWord[position - word_start] = '\0';
                 
-                // Only display the suggestion if it starts with what we're typing
+                // Only display the suggestion if it starts with what we're typing (case insensitive)
                 // and hasn't been completely typed already
-                if (strncmp(lastWord, currentWord, strlen(currentWord)) == 0 && 
-                    strcmp(lastWord, currentWord) != 0) {
+                if (_strnicmp(lastWord, currentWord, strlen(currentWord)) == 0 && 
+                    _stricmp(lastWord, currentWord) != 0) {
                     // Set text color to gray for suggestion
                     SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
                     // Print only the part of the suggestion that hasn't been typed yet
@@ -155,8 +155,8 @@ char *lsh_read_line(void) {
                 // Insert the selected match into buffer
                 char *current_match = tab_matches[tab_index];
                 
-                // Check if the match is already fully typed out
-                int already_typed = (strcmp(buffer + word_start, current_match) == 0);
+                // Check if the match is already fully typed out (case insensitive)
+                int already_typed = (_stricmp(buffer + word_start, current_match) == 0);
                 
                 // Replace partial path with current match
                 strcpy(buffer + word_start, current_match);
@@ -231,8 +231,8 @@ char *lsh_read_line(void) {
                 strncpy(currentWord, buffer + word_start, position - word_start);
                 currentWord[position - word_start] = '\0';
                 
-                // Check if the user has already completely typed the suggestion
-                if (strcmp(currentWord, lastWord) == 0) {
+                // Check if the user has already completely typed the suggestion (case insensitive)
+                if (_stricmp(currentWord, lastWord) == 0) {
                     // User has already typed the complete suggestion, execute immediately
                     putchar('\n');  // Echo newline
                     buffer[position] = '\0';
@@ -359,8 +359,8 @@ char *lsh_read_line(void) {
             strncpy(partial_path, buffer + word_start, position - word_start);
             partial_path[position - word_start] = '\0';
             
-            // Check if we're continuing to tab through the same prefix
-            if (strcmp(partial_path, last_tab_prefix) != 0 || tab_matches == NULL) {
+            // Check if we're continuing to tab through the same prefix (case insensitive)
+            if (_stricmp(partial_path, last_tab_prefix) != 0 || tab_matches == NULL) {
                 // New prefix or first tab press, find all matches
                 // Clean up previous matches if any
                 if (tab_matches) {
@@ -372,9 +372,6 @@ char *lsh_read_line(void) {
                 
                 // Store the current prefix
                 strcpy(last_tab_prefix, partial_path);
-                
-                // Reset tab index
-                tab_index = 0;
                 
                 // Check if this is the first word (command)
                 int is_first_word = (tab_word_start == 0);
@@ -393,94 +390,29 @@ char *lsh_read_line(void) {
                     continue;
                 }
                 
-                // Display the first match with our helper function to avoid flickering
-                if (tab_matches && tab_num_matches > 0) {
-                    redraw_tab_suggestion(hConsole, promptEndPos, original_line, 
-                                          tab_matches[tab_index], last_tab_prefix,
-                                          tab_index, tab_num_matches, originalAttributes);
-                    continue;
+                // Skip to the second match immediately if we have more than one match
+                // and there's a suggestion currently being shown (suggesting the first match)
+                if (suggestion && tab_num_matches > 1 && showing_suggestion) {
+                    // Start with the second match (index 1)
+                    tab_index = 1;
+                } else {
+                    // Otherwise start with the first match
+                    tab_index = 0;
                 }
             } else {
                 // Same prefix, cycle to next match
                 tab_index = (tab_index + 1) % tab_num_matches;
-                
-                // Redraw with the next match
-                redraw_tab_suggestion(hConsole, promptEndPos, original_line, 
-                                      tab_matches[tab_index], last_tab_prefix,
-                                      tab_index, tab_num_matches, originalAttributes);
-                continue;
             }
             
-            if (tab_matches && tab_num_matches > 0) {
-                // Create a buffer for what we want to display in one go
-                char displayBuffer[2048] = "";
-                
-                // Same prefix, cycle to next match
-                tab_index = (tab_index + 1) % tab_num_matches;
-                
-                // Build the command display in our buffer instead of printing directly
-                // First the original command prefix
-                strcat(displayBuffer, original_line);
-                
-                // Get prefix length for later use (what user typed after the command)
-                int prefixLen = strlen(last_tab_prefix);
-                
-                // Matching prefix part in normal color
-                char matchPrefix[1024] = "";
-                strncpy(matchPrefix, tab_matches[tab_index], prefixLen);
-                matchPrefix[prefixLen] = '\0';
-                strcat(displayBuffer, matchPrefix);
-                
-                // The rest of the match
-                strcat(displayBuffer, tab_matches[tab_index] + prefixLen);
-                
-                // Add indicator if needed
-                char indicatorBuffer[20] = "";
-                if (tab_num_matches > 1) {
-                    sprintf(indicatorBuffer, " (%d/%d)", tab_index + 1, tab_num_matches);
-                }
-                
-                // Get the cursor position where it should end up (after suggestion, before indicator)
-                // Remove unused variable
-                // int cursorPos = strlen(displayBuffer);
-                
-                // Add the indicator to the display buffer
-                strcat(displayBuffer, indicatorBuffer);
-                
-                // Clear the line and print everything at once to avoid cursor flicker
-                
-                // First, FillConsoleOutputCharacter to clear the line
-                DWORD numCharsWritten;
-                FillConsoleOutputCharacter(hConsole, ' ', 80, promptEndPos, &numCharsWritten);
-                
-                // Move cursor to beginning of line
-                SetConsoleCursorPosition(hConsole, promptEndPos);
-                
-                // Print command and normal part of suggestion
-                printf("%s%s", original_line, matchPrefix);
-                
-                // Print rest of suggestion in gray
-                SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
-                printf("%s", tab_matches[tab_index] + prefixLen);
-                
-                // Save cursor position (end of suggestion)
-                GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
-                COORD endOfSuggestionPos = consoleInfo.dwCursorPosition;
-                
-                // Print indicator in gray
-                if (tab_num_matches > 1) {
-                    printf("%s", indicatorBuffer);
-                }
-                
-                // Reset text color
-                SetConsoleTextAttribute(hConsole, originalAttributes);
-                
-                // Move cursor back to end of suggestion
-                SetConsoleCursorPosition(hConsole, endOfSuggestionPos);
-                
-                // Reset execution flag when using Tab
-                ready_to_execute = 0;
-            }
+            // Display the current match
+            redraw_tab_suggestion(hConsole, promptEndPos, original_line, 
+                                 tab_matches[tab_index], last_tab_prefix,
+                                 tab_index, tab_num_matches, originalAttributes);
+                                 
+            // Reset execution flag when using Tab
+            ready_to_execute = 0;
+            
+            continue;
         } else if (isprint(c)) {
             // Regular printable character
             
