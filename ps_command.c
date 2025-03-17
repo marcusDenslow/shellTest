@@ -129,8 +129,10 @@ TableData* lsh_ps_structured(char **args) {
             row[3].type = TYPE_STRING;
             row[3].value.str_val = _strdup(threadStr);
             
-            // Store whether this is a user process
-            row[0].is_highlighted = isUserProcess;
+            // Set highlighting flag for all values in the row
+            for (int j = 0; j < header_count; j++) {
+                row[j].is_highlighted = isUserProcess;
+            }
             
             // Add the row to the table
             add_table_row(table, row);
@@ -143,4 +145,23 @@ TableData* lsh_ps_structured(char **args) {
     CloseHandle(hSnapshot);
     
     return table;
+}
+
+/**
+ * Implementation of the ps command to display process information
+ * Uses structured data to show processes in a formatted table
+ */
+int lsh_ps(char **args) {
+    // Create structured data table for processes
+    TableData *table = lsh_ps_structured(args);
+    
+    if (table) {
+        // Print the table using our nice formatting
+        print_table(table);
+        
+        // Free the table
+        free_table(table);
+    }
+    
+    return 1;
 }

@@ -1732,35 +1732,156 @@ SetConsoleCursorPosition(hConsole, homeCoords);
 return 1;
 }
 
-// List directory contents with creation time and file type
+// Function to determine color based on file extension
+WORD get_file_color(const char *filename) {
+    // Default file color (BLUE)
+    WORD color = FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    
+    // Find the file extension
+    char *dot = strrchr(filename, '.');
+    if (!dot || dot == filename) {
+        return color; // No extension found, use default
+    }
+    
+    // Move past the dot
+    char *ext = dot + 1;
+    
+    // C/C++ source files - blue
+    if (stricmp(ext, "c") == 0 || stricmp(ext, "cpp") == 0 || 
+        stricmp(ext, "cc") == 0) {
+        return FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    }
+    
+    // C/C++ header files - purple/magenta
+    if (stricmp(ext, "h") == 0 || stricmp(ext, "hpp") == 0) {
+        return FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    }
+    
+    // Python files
+    if (stricmp(ext, "py") == 0 || stricmp(ext, "pyc") == 0 || 
+        stricmp(ext, "pyd") == 0 || stricmp(ext, "pyw") == 0) {
+        return FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    }
+    
+    // JavaScript/TypeScript files
+    if (stricmp(ext, "js") == 0 || stricmp(ext, "ts") == 0 || 
+        stricmp(ext, "jsx") == 0 || stricmp(ext, "tsx") == 0) {
+        return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    }
+    
+    // Java files
+    if (stricmp(ext, "java") == 0 || stricmp(ext, "class") == 0 || 
+        stricmp(ext, "jar") == 0) {
+        return FOREGROUND_RED | FOREGROUND_INTENSITY;
+    }
+    
+    // Rust files
+    if (stricmp(ext, "rs") == 0) {
+        return FOREGROUND_RED | FOREGROUND_INTENSITY;
+    }
+    
+    // Go files
+    if (stricmp(ext, "go") == 0) {
+        return FOREGROUND_BLUE | FOREGROUND_GREEN;
+    }
+    
+    // Ruby files
+    if (stricmp(ext, "rb") == 0) {
+        return FOREGROUND_RED;
+    }
+    
+    // PHP files
+    if (stricmp(ext, "php") == 0) {
+        return FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    }
+    
+    // HTML/CSS/Web files
+    if (stricmp(ext, "html") == 0 || stricmp(ext, "htm") == 0 || 
+        stricmp(ext, "css") == 0 || stricmp(ext, "xml") == 0) {
+        return FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    }
+    
+    // Markdown/Text files
+    if (stricmp(ext, "md") == 0 || stricmp(ext, "txt") == 0 || 
+        stricmp(ext, "markdown") == 0) {
+        return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
+    }
+    
+    // Shell scripts
+    if (stricmp(ext, "sh") == 0 || stricmp(ext, "bash") == 0 || 
+        stricmp(ext, "zsh") == 0 || stricmp(ext, "bat") == 0 || 
+        stricmp(ext, "cmd") == 0) {
+        return FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    }
+    
+    // Executable files
+    if (stricmp(ext, "exe") == 0 || stricmp(ext, "dll") == 0 || 
+        stricmp(ext, "sys") == 0) {
+        return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    }
+    
+    // Images
+    if (stricmp(ext, "jpg") == 0 || stricmp(ext, "jpeg") == 0 || 
+        stricmp(ext, "png") == 0 || stricmp(ext, "gif") == 0 || 
+        stricmp(ext, "bmp") == 0) {
+        return FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    }
+    
+    // Data files
+    if (stricmp(ext, "json") == 0 || stricmp(ext, "csv") == 0 || 
+        stricmp(ext, "yaml") == 0 || stricmp(ext, "yml") == 0 || 
+        stricmp(ext, "xml") == 0 || stricmp(ext, "toml") == 0) {
+        return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    }
+    
+    return color; // Default color
+}
+
+
 int lsh_dir(char **args) {
     char cwd[1024];
     WIN32_FIND_DATA findData;
     HANDLE hFind;
     
-    // Define column widths for better alignment
-    const int timeColWidth = 20;
-    const int sizeColWidth = 15;
-    const int typeColWidth = 10;
-    const int nameColWidth = 30;
-    
     // Get handle to console for output
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     
+    // Get current time for relative time calculations
+    SYSTEMTIME currentTime;
+    GetLocalTime(&currentTime);
+    FILETIME currentFileTime;
+    SystemTimeToFileTime(&currentTime, &currentFileTime);
+    ULARGE_INTEGER currentTimeValue;
+    currentTimeValue.LowPart = currentFileTime.dwLowDateTime;
+    currentTimeValue.HighPart = currentFileTime.dwHighDateTime;
+    
     // Get console screen size
     CONSOLE_SCREEN_BUFFER_INFO csbi;
-    int consoleHeight = 0;
+    int consoleWidth = 80; // Default width
+    int consoleHeight = 25; // Default height
+    
     if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+        consoleWidth = csbi.srWindow.Right - csbi.srWindow.Left + 1;
         consoleHeight = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
-    } else {
-        // Fallback if we can't get the console info
-        consoleHeight = 25; // Common default height
     }
     
     // Get current directory
     if (_getcwd(cwd, sizeof(cwd)) == NULL) {
         perror("lsh");
         return 1;
+    }
+    
+    // Calculate directory info box width based on path length
+    int dirInfoWidth = strlen(cwd) + 14; // "Directory: " + path
+    int itemsLineWidth = 20; // "Items: " + number (estimated)
+    int infoBoxWidth = (dirInfoWidth > itemsLineWidth) ? dirInfoWidth : itemsLineWidth;
+    
+    // Add padding to infoBoxWidth
+    infoBoxWidth += 6; // 3 chars on each side for padding
+    
+    // Cap the infoBoxWidth to console width - 4 (for some margin)
+    if (infoBoxWidth > consoleWidth - 4) {
+        infoBoxWidth = consoleWidth - 4;
     }
     
     // Prepare search pattern for all files
@@ -1778,7 +1899,6 @@ int lsh_dir(char **args) {
     }
     
     do {
-        // Skip . and .. directories for cleaner output
         if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
             fileCount++;
         }
@@ -1786,17 +1906,11 @@ int lsh_dir(char **args) {
     
     FindClose(hFind);
     
-    // Calculate listing height
-    // Title line + blank line = 2
-    // Top header (3 lines)
-    // One line per file
-    // Bottom border line
-    // Total = 2 + 3 + fileCount + 1 = 6 + fileCount
-    int listingHeight = 6 + fileCount;
-    
-    // Determine if the listing will be taller than the console height
-    // If yes, we'll add headers at the bottom
-    int needBottomHeader = (listingHeight > consoleHeight);
+    // Dynamic column width calculation - start with minimum sizes
+    int nameColWidth = 4;      // Minimum for "Name"
+    int sizeColWidth = 4;      // Minimum for "Size"
+    int typeColWidth = 9;      // Minimum for "Directory"
+    int modifiedColWidth = 16; // Minimum for "Last Modified"
     
     // Allocate array for all files
     FileInfo *fileInfoArray = (FileInfo*)malloc(sizeof(FileInfo) * (fileCount > 0 ? fileCount : 1));
@@ -1807,7 +1921,7 @@ int lsh_dir(char **args) {
     
     int fileInfoIndex = 0;
     
-    // Second pass to actually process files
+    // Second pass to process files and compute maximum column widths
     hFind = FindFirstFile(searchPath, &findData);
     
     if (hFind == INVALID_HANDLE_VALUE) {
@@ -1816,30 +1930,51 @@ int lsh_dir(char **args) {
         return 1;
     }
 
-    // Process all files and store in array
+    // Process all files and determine max column widths dynamically
     do {
-        // Skip . and .. directories for cleaner output
         if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
-            // Convert file creation time to system time
-            SYSTEMTIME fileTime;
-            FileTimeToSystemTime(&findData.ftCreationTime, &fileTime);
+            // Format the last modified time as a relative time
+            ULARGE_INTEGER fileTimeValue;
+            fileTimeValue.LowPart = findData.ftLastWriteTime.dwLowDateTime;
+            fileTimeValue.HighPart = findData.ftLastWriteTime.dwHighDateTime;
             
-            // Format creation time as string
-            char timeString[32];
-            sprintf(timeString, "%04d-%02d-%02d %02d:%02d:%02d", 
-                    fileTime.wYear, fileTime.wMonth, fileTime.wDay,
-                    fileTime.wHour, fileTime.wMinute, fileTime.wSecond);
+            // Calculate difference in 100-nanosecond intervals
+            ULONGLONG timeDiff = (currentTimeValue.QuadPart - fileTimeValue.QuadPart) / 10000000; // Convert to seconds
+            
+            char timeString[64];
+            if (timeDiff < 60) {
+                sprintf(timeString, "%llu seconds ago", timeDiff);
+            } else if (timeDiff < 3600) {
+                sprintf(timeString, "%llu minutes ago", timeDiff / 60);
+            } else if (timeDiff < 86400) {
+                sprintf(timeString, "%llu hours ago", timeDiff / 3600);
+            } else if (timeDiff < 604800) {
+                sprintf(timeString, "%llu days ago", timeDiff / 86400);
+            } else if (timeDiff < 2629800) { // ~1 month in seconds
+                sprintf(timeString, "%llu weeks ago", timeDiff / 604800);
+            } else if (timeDiff < 31557600) { // ~1 year in seconds
+                sprintf(timeString, "%llu months ago", timeDiff / 2629800);
+            } else {
+                sprintf(timeString, "%llu years ago", timeDiff / 31557600);
+            }
+            
+            // Update max width for modified column
+            int len = strlen(timeString);
+            if (len > modifiedColWidth) modifiedColWidth = len;
             
             // Check if it's a directory
             BOOL isDirectory = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
             const char* fileType = isDirectory ? "Directory" : "File";
+            
+            // Update max width for type column
+            len = strlen(fileType);
+            if (len > typeColWidth) typeColWidth = len;
             
             // Format size (only for files)
             char sizeString[32];
             if (isDirectory) {
                 strcpy(sizeString, "-");
             } else {
-                // Format size with appropriate units
                 if (findData.nFileSizeLow < 1024) {
                     sprintf(sizeString, "%lu B", findData.nFileSizeLow);
                 } else if (findData.nFileSizeLow < 1024 * 1024) {
@@ -1849,88 +1984,159 @@ int lsh_dir(char **args) {
                 }
             }
             
-            // Truncate filename if too long
-            char truncName[nameColWidth];
-            strncpy(truncName, findData.cFileName, nameColWidth-3);
-            truncName[nameColWidth-3] = '\0';
-            if (strlen(findData.cFileName) > nameColWidth-3) {
-                strcat(truncName, "...");
-            }
+            // Update max width for size column
+            len = strlen(sizeString);
+            if (len > sizeColWidth) sizeColWidth = len;
             
-            // Store in array for sorting and display
+            // Update max width for name column
+            len = strlen(findData.cFileName);
+            if (len > nameColWidth) nameColWidth = len;
+            
+            // Store file info
             strcpy(fileInfoArray[fileInfoIndex].timeString, timeString);
             strcpy(fileInfoArray[fileInfoIndex].sizeString, sizeString);
             strcpy(fileInfoArray[fileInfoIndex].fileType, fileType);
-            strcpy(fileInfoArray[fileInfoIndex].fileName, truncName);
+            strcpy(fileInfoArray[fileInfoIndex].fileName, findData.cFileName);
             fileInfoArray[fileInfoIndex].isDirectory = isDirectory;
             fileInfoIndex++;
         }
     } while (FindNextFile(hFind, &findData));
 
-    // Close find handle
     FindClose(hFind);
     
-    // Sort the array by type (directories first) and then by name
+    // Add padding to column widths
+    nameColWidth += 2;
+    sizeColWidth += 2;
+    typeColWidth += 2;
+    modifiedColWidth += 2;
+    
+    // Sort the array
     qsort(fileInfoArray, fileInfoIndex, sizeof(FileInfo), compare_dir_entries);
     
-    // Print directory info at the top
-    printf("\nContents of directory: %s (%d items)\n\n", cwd, fileInfoIndex);
+    // Calculate total table width
+    int tableWidth = nameColWidth + sizeColWidth + typeColWidth + modifiedColWidth + 5; // +5 for the borders
+    
+    // Ensure the table is at least as wide as the info box
+    if (tableWidth < infoBoxWidth) {
+        // Distribute the extra width to the name column (most flexible)
+        nameColWidth += (infoBoxWidth - tableWidth);
+        tableWidth = infoBoxWidth;
+    }
+    
+
+      // Print directory info box with proper width
+    printf("\n\u250C");
+    for (int i = 0; i < infoBoxWidth - 2; i++) printf("\u2500");
+    printf("\u2510\n");
+    
+    // Calculate max display length for directory path
+    // The -13 accounts for: "│ Directory: " (13 chars) and "│" (1 char) at the end
+    int maxPathDisplayLen = infoBoxWidth - 14;
+    
+    // Truncate path if needed with ellipsis
+    char displayPath[1024];
+    if (strlen(cwd) > maxPathDisplayLen) {
+        // Find a good place to truncate
+        int keepEnd = maxPathDisplayLen - 3; // 3 chars for "..."
+        strcpy(displayPath, "...");
+        strcat(displayPath, cwd + strlen(cwd) - keepEnd);
+    } else {
+        strcpy(displayPath, cwd);
+    }
+    
+    // Fixed padding for alignment - exactly align with infoBoxWidth
+    // Use a fixed-width field for the directory path
+    printf("\u2502 Directory: %-*s\u2502\n", maxPathDisplayLen, displayPath);
+    
+    // Fixed padding for the items count too
+    // The items count field width is infoBoxWidth - 10 (for "│ Items: " and "│")
+    printf("\u2502 Items: %-*d\u2502\n", infoBoxWidth - 10, fileInfoIndex);
+    
+    printf("\u2514");
+    for (int i = 0; i < infoBoxWidth - 2; i++) printf("\u2500");
+    printf("\u2518\n\n");
+   
+    
+    
+    // Create format strings for headers
+    char headerFmt[256];
+    
+    // Build format string with columns reordered: Name, Size, Type, Last Modified
+    sprintf(headerFmt, "\u2502 %%-%ds \u2502 %%-%ds \u2502 %%-%ds \u2502 %%-%ds \u2502",
+        nameColWidth - 2, sizeColWidth - 2, typeColWidth - 2, modifiedColWidth - 2);
     
     // Print table header
-    printf("+%.*s+%.*s+%.*s+%.*s+\n", 
-        timeColWidth, "--------------------", 
-        sizeColWidth, "---------------", 
-        typeColWidth, "----------", 
-        nameColWidth, "------------------------------");
-        
-    printf("| %-*s | %-*s | %-*s | %-*s |\n", 
-        timeColWidth-2, "Created", 
-        sizeColWidth-2, "Size", 
-        typeColWidth-2, "Type", 
-        nameColWidth-2, "Name");
-        
-    printf("+%.*s+%.*s+%.*s+%.*s+\n", 
-        timeColWidth, "--------------------", 
-        sizeColWidth, "---------------", 
-        typeColWidth, "----------", 
-        nameColWidth, "------------------------------");
+    printf("\u250C");
+    for (int i = 0; i < nameColWidth; i++) printf("\u2500");
+    printf("\u252C");
+    for (int i = 0; i < sizeColWidth; i++) printf("\u2500");
+    printf("\u252C");
+    for (int i = 0; i < typeColWidth; i++) printf("\u2500");
+    printf("\u252C");
+    for (int i = 0; i < modifiedColWidth; i++) printf("\u2500");
+    printf("\u2510\n");
     
-    // Print all stored file information
+    // Print header with new column order
+    printf(headerFmt, "Name", "Size", "Type", "Last Modified");
+    printf("\n");
+    
+    // Separator line
+    printf("\u251C");
+    for (int i = 0; i < nameColWidth; i++) printf("\u2500");
+    printf("\u253C");
+    for (int i = 0; i < sizeColWidth; i++) printf("\u2500");
+    printf("\u253C");
+    for (int i = 0; i < typeColWidth; i++) printf("\u2500");
+    printf("\u253C");
+    for (int i = 0; i < modifiedColWidth; i++) printf("\u2500");
+    printf("\u2524\n");
+    
+    // Print data rows with colored fields and new column order
     for (int i = 0; i < fileInfoIndex; i++) {
-        printf("| %-*s | %-*s | %-*s | %-*s |\n", 
-            timeColWidth-2, fileInfoArray[i].timeString, 
-            sizeColWidth-2, fileInfoArray[i].sizeString, 
-            typeColWidth-2, fileInfoArray[i].fileType, 
-            nameColWidth-2, fileInfoArray[i].fileName);
-    }
-    
-    // Print bottom border of table
-    printf("+%.*s+%.*s+%.*s+%.*s+\n", 
-        timeColWidth, "--------------------", 
-        sizeColWidth, "---------------", 
-        typeColWidth, "----------", 
-        nameColWidth, "------------------------------");
+        // Start the row
+        printf("\u2502 ");
         
-    // Print headers again at the bottom ONLY if the listing is taller than the console
-    if (needBottomHeader) {
-        printf("| %-*s | %-*s | %-*s | %-*s |\n", 
-            timeColWidth-2, "Created", 
-            sizeColWidth-2, "Size", 
-            typeColWidth-2, "Type", 
-            nameColWidth-2, "Name");
-            
-        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
-            timeColWidth, "--------------------", 
-            sizeColWidth, "---------------", 
-            typeColWidth, "----------", 
-            nameColWidth, "------------------------------");
+        // Print filename with color based on extension or directory status
+        if (fileInfoArray[i].isDirectory) {
+            set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        } else {
+            // Use extension-based coloring for files
+            set_color(get_file_color(fileInfoArray[i].fileName));
+        }
+        printf("%-*s", nameColWidth - 2, fileInfoArray[i].fileName);
+        reset_color();
+        
+        // Print size in red
+        printf(" \u2502 ");
+        set_color(FOREGROUND_RED | FOREGROUND_INTENSITY);
+        printf("%-*s", sizeColWidth - 2, fileInfoArray[i].sizeString);
+        reset_color();
+        
+        // Print type (default color)
+        printf(" \u2502 %-*s \u2502 ", typeColWidth - 2, fileInfoArray[i].fileType);
+        
+        // Print last modified time (default color)
+        printf("%-*s \u2502\n", modifiedColWidth - 2, fileInfoArray[i].timeString);
     }
     
-    // Clean up
-    free(fileInfoArray);
+    // Bottom border
+    printf("\u2514");
+    for (int i = 0; i < nameColWidth; i++) printf("\u2500");
+    printf("\u2534");
+    for (int i = 0; i < sizeColWidth; i++) printf("\u2500");
+    printf("\u2534");
+    for (int i = 0; i < typeColWidth; i++) printf("\u2500");
+    printf("\u2534");
+    for (int i = 0; i < modifiedColWidth; i++) printf("\u2500");
+    printf("\u2518\n");
     
+    printf("\n");
+    
+    free(fileInfoArray);
     return 1;
 }
+
+
 
 static char *copied_file_path = NULL;
 static char *copied_file_name = NULL;
@@ -2297,8 +2503,8 @@ TableData* lsh_dir_structured(char **args) {
     WIN32_FIND_DATA findData;
     HANDLE hFind;
     
-    // Create table with appropriate headers
-    char *headers[] = {"Created", "Size", "Type", "Name"};
+    // Create table with appropriate headers - matching the order in lsh_dir()
+    char *headers[] = {"Name", "Size", "Type", "Last Modified"};
     TableData *table = create_table(headers, 4);
     if (!table) {
         return NULL;
@@ -2310,6 +2516,15 @@ TableData* lsh_dir_structured(char **args) {
         free_table(table);
         return NULL;
     }
+    
+    // Get current time for relative time calculations
+    SYSTEMTIME currentTime;
+    GetLocalTime(&currentTime);
+    FILETIME currentFileTime;
+    SystemTimeToFileTime(&currentTime, &currentFileTime);
+    ULARGE_INTEGER currentTimeValue;
+    currentTimeValue.LowPart = currentFileTime.dwLowDateTime;
+    currentTimeValue.HighPart = currentFileTime.dwHighDateTime;
     
     // Prepare search pattern for all files
     char searchPath[1024];
@@ -2325,359 +2540,179 @@ TableData* lsh_dir_structured(char **args) {
         return NULL;
     }
     
-    // Process all files and store in array
+    // Count files for initial allocation
+    int fileCount = 0;
     do {
-        // Skip . and .. directories for cleaner output
         if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
-            // Convert file creation time to system time
-            SYSTEMTIME fileTime;
-            FileTimeToSystemTime(&findData.ftCreationTime, &fileTime);
-            
-            // Format creation time as string
-            char timeString[32];
-            sprintf(timeString, "%04d-%02d-%02d %02d:%02d:%02d", 
-                    fileTime.wYear, fileTime.wMonth, fileTime.wDay,
-                    fileTime.wHour, fileTime.wMinute, fileTime.wSecond);
-            
-            // Check if it's a directory
-            BOOL isDirectory = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
-            const char* fileType = isDirectory ? "Directory" : "File";
-            
-            // Format size (only for files)
-            char sizeString[32];
-            if (isDirectory) {
-                strcpy(sizeString, "-");
-            } else {
-                // Format size with appropriate units
-                if (findData.nFileSizeLow < 1024) {
-                    sprintf(sizeString, "%lu B", findData.nFileSizeLow);
-                } else if (findData.nFileSizeLow < 1024 * 1024) {
-                    sprintf(sizeString, "%.1f KB", findData.nFileSizeLow / 1024.0);
-                } else {
-                    sprintf(sizeString, "%.1f MB", findData.nFileSizeLow / (1024.0 * 1024.0));
-                }
-            }
-            
-            // Create row of data values
-            DataValue *row = (DataValue*)malloc(4 * sizeof(DataValue));
-            if (!row) {
-                fprintf(stderr, "lsh: allocation error in lsh_dir_structured\n");
-                free_table(table);
-                return NULL;
-            }
-            
-            // Time column
-            row[0].type = TYPE_STRING;
-            row[0].value.str_val = _strdup(timeString);
-            
-            // Size column
-            row[1].type = TYPE_STRING;
-            row[1].value.str_val = _strdup(sizeString);
-            
-            // Type column
-            row[2].type = TYPE_STRING;
-            row[2].value.str_val = _strdup(fileType);
-            
-            // Name column
-            row[3].type = TYPE_STRING;
-            row[3].value.str_val = _strdup(findData.cFileName);
-            
-            // Add to table
-            add_table_row(table, row);
+            fileCount++;
         }
     } while (FindNextFile(hFind, &findData));
     
-    // Close find handle
     FindClose(hFind);
+    
+    // Structure to hold file info for sorting
+    typedef struct {
+        char timeString[64];
+        char sizeString[32];
+        char fileType[16];
+        char fileName[MAX_PATH];
+        BOOL isDirectory;
+        ULONGLONG timeDiff;  // For sorting by time
+    } FileInfoItem;
+    
+    // Allocate array for sorting
+    FileInfoItem *fileInfoArray = (FileInfoItem*)malloc(sizeof(FileInfoItem) * fileCount);
+    if (!fileInfoArray) {
+        fprintf(stderr, "lsh: allocation error in lsh_dir_structured\n");
+        free_table(table);
+        return NULL;
+    }
+    
+    // Second pass to collect file info
+    hFind = FindFirstFile(searchPath, &findData);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "lsh: Failed to list directory contents\n");
+        free(fileInfoArray);
+        free_table(table);
+        return NULL;
+    }
+    
+    int fileIndex = 0;
+    
+    // Process all files
+    do {
+        // Skip . and .. directories for cleaner output
+        if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
+            // Format the last modified time as a relative time
+            ULARGE_INTEGER fileTimeValue;
+            fileTimeValue.LowPart = findData.ftLastWriteTime.dwLowDateTime;
+            fileTimeValue.HighPart = findData.ftLastWriteTime.dwHighDateTime;
+            
+            // Calculate difference in 100-nanosecond intervals
+            ULONGLONG timeDiff = (currentTimeValue.QuadPart - fileTimeValue.QuadPart) / 10000000; // Convert to seconds
+            
+            // Store the time difference for sorting
+            fileInfoArray[fileIndex].timeDiff = timeDiff;
+            
+            // Format the time difference as a human-readable string
+            if (timeDiff < 60) {
+                sprintf(fileInfoArray[fileIndex].timeString, "%llu seconds ago", timeDiff);
+            } else if (timeDiff < 3600) {
+                sprintf(fileInfoArray[fileIndex].timeString, "%llu minutes ago", timeDiff / 60);
+            } else if (timeDiff < 86400) {
+                sprintf(fileInfoArray[fileIndex].timeString, "%llu hours ago", timeDiff / 3600);
+            } else if (timeDiff < 604800) {
+                sprintf(fileInfoArray[fileIndex].timeString, "%llu days ago", timeDiff / 86400);
+            } else if (timeDiff < 2629800) { // ~1 month in seconds
+                sprintf(fileInfoArray[fileIndex].timeString, "%llu weeks ago", timeDiff / 604800);
+            } else if (timeDiff < 31557600) { // ~1 year in seconds
+                sprintf(fileInfoArray[fileIndex].timeString, "%llu months ago", timeDiff / 2629800);
+            } else {
+                sprintf(fileInfoArray[fileIndex].timeString, "%llu years ago", timeDiff / 31557600);
+            }
+            
+            // Check if it's a directory
+            BOOL isDirectory = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+            strcpy(fileInfoArray[fileIndex].fileType, isDirectory ? "Directory" : "File");
+            fileInfoArray[fileIndex].isDirectory = isDirectory;
+            
+            // Format size (only for files)
+            if (isDirectory) {
+                strcpy(fileInfoArray[fileIndex].sizeString, "-");
+            } else {
+                if (findData.nFileSizeLow < 1024) {
+                    sprintf(fileInfoArray[fileIndex].sizeString, "%lu B", findData.nFileSizeLow);
+                } else if (findData.nFileSizeLow < 1024 * 1024) {
+                    sprintf(fileInfoArray[fileIndex].sizeString, "%.1f KB", findData.nFileSizeLow / 1024.0);
+                } else {
+                    sprintf(fileInfoArray[fileIndex].sizeString, "%.1f MB", findData.nFileSizeLow / (1024.0 * 1024.0));
+                }
+            }
+            
+            // Store filename
+            strcpy(fileInfoArray[fileIndex].fileName, findData.cFileName);
+            
+            fileIndex++;
+        }
+    } while (FindNextFile(hFind, &findData));
+    
+    FindClose(hFind);
+    
+    // Sort the files - directories first, then by name
+    for (int i = 0; i < fileCount - 1; i++) {
+        for (int j = 0; j < fileCount - i - 1; j++) {
+            // First sort by type (directories first)
+            if (fileInfoArray[j].isDirectory && !fileInfoArray[j+1].isDirectory) {
+                continue; // Already in correct order
+            } else if (!fileInfoArray[j].isDirectory && fileInfoArray[j+1].isDirectory) {
+                // Swap
+                FileInfoItem temp = fileInfoArray[j];
+                fileInfoArray[j] = fileInfoArray[j+1];
+                fileInfoArray[j+1] = temp;
+            } else {
+                // Same type, sort by name
+                if (strcasecmp(fileInfoArray[j].fileName, fileInfoArray[j+1].fileName) > 0) {
+                    // Swap
+                    FileInfoItem temp = fileInfoArray[j];
+                    fileInfoArray[j] = fileInfoArray[j+1];
+                    fileInfoArray[j+1] = temp;
+                }
+            }
+        }
+    }
+    
+    // Now add the sorted files to the table
+    for (int i = 0; i < fileCount; i++) {
+        // Create a new row for this file entry
+        DataValue *row = (DataValue*)malloc(4 * sizeof(DataValue));
+        if (!row) {
+            fprintf(stderr, "lsh: allocation error in lsh_dir_structured\n");
+            free(fileInfoArray);
+            free_table(table);
+            return NULL;
+        }
+        
+        // COLUMN 1: Name - Match the order in lsh_dir()
+        row[0].type = TYPE_STRING;
+        row[0].value.str_val = _strdup(fileInfoArray[i].fileName);
+        
+        // COLUMN 2: Size
+        row[1].type = TYPE_SIZE;  // Use SIZE type for better filtering support
+        row[1].value.str_val = _strdup(fileInfoArray[i].sizeString);
+        
+        // COLUMN 3: Type
+        row[2].type = TYPE_STRING;
+        row[2].value.str_val = _strdup(fileInfoArray[i].fileType);
+        
+        // COLUMN 4: Last Modified
+        row[3].type = TYPE_STRING;
+        row[3].value.str_val = _strdup(fileInfoArray[i].timeString);
+        
+        // Set highlighting based on file type
+        // For directories, use is_highlighted=1
+        // For files, store file color in is_highlighted with values > 1
+        if (fileInfoArray[i].isDirectory) {
+            row[0].is_highlighted = 1;  // Directory
+        } else {
+            // Determine color based on extension
+            WORD fileColor = get_file_color(fileInfoArray[i].fileName);
+            // Store color value + 1 (to avoid conflict with is_highlighted=1 for directories)
+            row[0].is_highlighted = (int)fileColor + 10;  // Offset to avoid conflict with directory flag
+        }
+        
+        // Add the row to the table
+        add_table_row(table, row);
+    }
+    
+    // Clean up
+    free(fileInfoArray);
     
     return table;
 }
 
-// Add filter command strings and function array
-char *filter_str[] = {
-    "where"
-};
-
-TableData* (*filter_func[]) (TableData*, char**) = {
-    &lsh_where
-};
-
-int filter_count = sizeof(filter_str) / sizeof(char*);
 
 
-int lsh_ps(char **args) {
-    HANDLE hSnapshot;
-    PROCESSENTRY32 pe32;
-    int processCount = 0;
-    
-    // Define column widths for better alignment
-    const int pidColWidth = 10;
-    const int nameColWidth = 30;
-    const int memColWidth = 15;
-    const int threadColWidth = 10;
-    
-    // Get handle to console for output
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    
-    // Get console screen size
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    int consoleHeight = 0;
-    if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
-        consoleHeight = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
-    } else {
-        // Fallback if we can't get console info
-        consoleHeight = 25; // Common default height
-    }
-    
-    // Structure to hold process info
-    typedef struct {
-        DWORD processId;
-        char processName[MAX_PATH];
-        SIZE_T memoryUsage;
-        DWORD threadCount;
-        BOOL isUserProcess;
-    } ProcessInfo;
-    
-    // Allocate initial space for 100 processes
-    int processCapacity = 100;
-    ProcessInfo *processes = (ProcessInfo*)malloc(processCapacity * sizeof(ProcessInfo));
-    if (!processes) {
-        fprintf(stderr, "lsh: allocation error in ps command\n");
-        return 1;
-    }
-    
-    // Create a snapshot of all processes
-    hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE) {
-        fprintf(stderr, "lsh: failed to create process snapshot\n");
-        free(processes);
-        return 1;
-    }
-    
-    // Set the size of the structure before using it
-    pe32.dwSize = sizeof(PROCESSENTRY32);
-    
-    // Retrieve information about the first process
-    if (!Process32First(hSnapshot, &pe32)) {
-        fprintf(stderr, "lsh: failed to get process information\n");
-        CloseHandle(hSnapshot);
-        free(processes);
-        return 1;
-    }
-    
-    // Walk through the snapshot of processes
-    do {
-        // Check if this is likely a user process by using heuristics
-        BOOL isUserProcess = FALSE;
-        
-        // Common system process executables to exclude
-        static const char *systemProcesses[] = {
-            "svchost.exe", "csrss.exe", "smss.exe", "wininit.exe", 
-            "services.exe", "lsass.exe", "winlogon.exe", "explorer.exe",
-            "spoolsv.exe", "dwm.exe", "taskhost.exe", "taskhostw.exe",
-            "conhost.exe", "system", "registry", "dllhost.exe",
-            "msdtc.exe", "sqlservr.exe", "w3wp.exe", "inetinfo.exe"
-        };
-        
-        BOOL isSystemProcess = FALSE;
-        for (int i = 0; i < sizeof(systemProcesses) / sizeof(systemProcesses[0]); i++) {
-            if (_stricmp(pe32.szExeFile, systemProcesses[i]) == 0) {
-                isSystemProcess = TRUE;
-                break;
-            }
-        }
-        
-        // Get additional process info
-        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe32.th32ProcessID);
-        SIZE_T memoryUsage = 0;
-        
-        if (hProcess != NULL) {
-            PROCESS_MEMORY_COUNTERS pmc;
-            if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc))) {
-                memoryUsage = pmc.WorkingSetSize;
-            }
-            CloseHandle(hProcess);
-        }
-        
-        // Include if not a system process or if it has a significant memory footprint
-        if (!isSystemProcess || memoryUsage > 20 * 1024 * 1024) {  // > 20MB is likely a user app
-            // Make space for more processes if needed
-            if (processCount >= processCapacity) {
-                processCapacity *= 2;
-                ProcessInfo *newBuffer = (ProcessInfo*)realloc(processes, processCapacity * sizeof(ProcessInfo));
-                if (!newBuffer) {
-                    fprintf(stderr, "lsh: allocation error in ps command\n");
-                    free(processes);
-                    CloseHandle(hSnapshot);
-                    return 1;
-                }
-                processes = newBuffer;
-            }
-            
-            // Store process information
-            processes[processCount].processId = pe32.th32ProcessID;
-            strncpy(processes[processCount].processName, pe32.szExeFile, MAX_PATH);
-            processes[processCount].memoryUsage = memoryUsage;
-            processes[processCount].threadCount = pe32.cntThreads;
-            processes[processCount].isUserProcess = !isSystemProcess;
-            
-            processCount++;
-        }
-        
-    } while (Process32Next(hSnapshot, &pe32));
-    
-    // Clean up the snapshot handle
-    CloseHandle(hSnapshot);
-    
-    // Calculate listing height
-    // Title line + blank line = 2
-    // Top header (3 lines)
-    // One line per process
-    // Bottom border line
-    // Total = 2 + 3 + processCount + 1 = 6 + processCount
-    int listingHeight = 6 + processCount;
-    
-    // Determine if the listing will be taller than the console height
-    int needBottomHeader = (listingHeight > consoleHeight);
-    
-    // Print process info header
-    printf("\nRunning Processes (%d user processes)\n\n", processCount);
-    
-    // Print table header
-    printf("+%.*s+%.*s+%.*s+%.*s+\n", 
-        pidColWidth, "----------", 
-        nameColWidth, "------------------------------", 
-        memColWidth, "---------------", 
-        threadColWidth, "----------");
-        
-    printf("| %-*s | %-*s | %-*s | %-*s |\n", 
-        pidColWidth-2, "PID", 
-        nameColWidth-2, "Process Name", 
-        memColWidth-2, "Memory Usage", 
-        threadColWidth-2, "Threads");
-        
-    printf("+%.*s+%.*s+%.*s+%.*s+\n", 
-        pidColWidth, "----------", 
-        nameColWidth, "------------------------------", 
-        memColWidth, "---------------", 
-        threadColWidth, "----------");
-    
-    // Print all process information
-    for (int i = 0; i < processCount; i++) {
-        // Format memory usage (KB, MB, GB)
-        char memoryString[32];
-        if (processes[i].memoryUsage < 1024) {
-            sprintf(memoryString, "%llu B", (unsigned long long)processes[i].memoryUsage);
-        } else if (processes[i].memoryUsage < 1024 * 1024) {
-            sprintf(memoryString, "%.1f KB", processes[i].memoryUsage / 1024.0);
-        } else if (processes[i].memoryUsage < 1024 * 1024 * 1024) {
-            sprintf(memoryString, "%.1f MB", processes[i].memoryUsage / (1024.0 * 1024.0));
-        } else {
-            sprintf(memoryString, "%.1f GB", processes[i].memoryUsage / (1024.0 * 1024.0 * 1024.0));
-        }
-        
-        // Truncate process name if too long
-        char truncName[nameColWidth];
-        strncpy(truncName, processes[i].processName, nameColWidth-3);
-        truncName[nameColWidth-3] = '\0';
-        if (strlen(processes[i].processName) > nameColWidth-3) {
-            strcat(truncName, "...");
-        }
-        
-        // Highlight user processes with different color
-        if (processes[i].isUserProcess) {
-            set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-        }
-        
-        printf("| %-*lu | %-*s | %-*s | %-*lu |\n", 
-            pidColWidth-2, processes[i].processId, 
-            nameColWidth-2, truncName, 
-            memColWidth-2, memoryString, 
-            threadColWidth-2, processes[i].threadCount);
-            
-        // Reset color
-        reset_color();
-    }
-    
-    // Print bottom border of table
-    printf("+%.*s+%.*s+%.*s+%.*s+\n", 
-        pidColWidth, "----------", 
-        nameColWidth, "------------------------------", 
-        memColWidth, "---------------", 
-        threadColWidth, "----------");
-        
-    // Print headers again at the bottom if the listing is tall
-    if (needBottomHeader) {
-        printf("| %-*s | %-*s | %-*s | %-*s |\n", 
-            pidColWidth-2, "PID", 
-            nameColWidth-2, "Process Name", 
-            memColWidth-2, "Memory Usage", 
-            threadColWidth-2, "Threads");
-            
-        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
-            pidColWidth, "----------", 
-            nameColWidth, "------------------------------", 
-            memColWidth, "---------------", 
-            threadColWidth, "----------");
-    }
-    
-    // Clean up
-    free(processes);
-    
-    return 1;
-}
 
-
-char* extract_json_string(const char* json, const char* field) {
-    static char result[1024];
-    char search_term[256];
-    char* start;
-    char* end;
-    
-    // Construct the search term: "field":"
-    sprintf(search_term, "\"%s\":\"", field);
-    
-    // Find the field in the JSON
-    start = strstr(json, search_term);
-    if (!start) {
-        // Try without quotes for object/array values
-        sprintf(search_term, "\"%s\":", field);
-        start = strstr(json, search_term);
-        if (!start) {
-            return NULL;
-        }
-        
-        // Skip past the field name and colon
-        start += strlen(search_term);
-        
-        // Check if it's an object or array
-        if (*start == '{' || *start == '[') {
-            return "Object or array (not a simple string)";
-        }
-        
-        return NULL;
-    }
-    
-    // Skip past the field name and quotes
-    start += strlen(search_term);
-    
-    // Find the closing quote
-    end = strchr(start, '"');
-    if (!end) {
-        return NULL;
-    }
-    
-    // Copy the value to our result buffer
-    int length = end - start;
-    if (length >= sizeof(result) - 1) {
-        length = sizeof(result) - 1;
-    }
-    
-    strncpy(result, start, length);
-    result[length] = '\0';
-    
-    return result;
-}
 
 /**
  * Get the latest commit message from GitHub
@@ -2922,6 +2957,80 @@ reset_color();
     
     return 1;
 }
+
+
+/**
+ * Extract a string value from a JSON object
+ */
+char* extract_json_string(const char *json, const char *key) {
+    char search_key[256];
+    char *value = NULL;
+    char *key_pos, *value_start, *value_end;
+    int value_len;
+    
+    // Format the key with quotes
+    snprintf(search_key, sizeof(search_key), "\"%s\":", key);
+    
+    // Find the key in the JSON
+    key_pos = strstr(json, search_key);
+    if (!key_pos) return NULL;
+    
+    // Move past the key and colon
+    key_pos += strlen(search_key);
+    
+    // Skip whitespace
+    while (*key_pos && isspace(*key_pos)) key_pos++;
+    
+    if (*key_pos == '"') {
+        // String value
+        value_start = key_pos + 1;
+        value_end = value_start;
+        
+        // Find the end of the string (accounting for escaped quotes)
+        int escaped = 0;
+        while (*value_end) {
+            if (escaped) {
+                escaped = 0;
+            } else if (*value_end == '\\') {
+                escaped = 1;
+            } else if (*value_end == '"') {
+                break;
+            }
+            value_end++;
+        }
+        
+        if (*value_end == '"') {
+            value_len = value_end - value_start;
+            value = (char*)malloc(value_len + 1);
+            if (value) {
+                strncpy(value, value_start, value_len);
+                value[value_len] = '\0';
+                
+                // Unescape the string
+                char *src = value;
+                char *dst = value;
+                escaped = 0;
+                
+                while (*src) {
+                    if (escaped) {
+                        *dst++ = *src++;
+                        escaped = 0;
+                    } else if (*src == '\\') {
+                        escaped = 1;
+                        src++;
+                    } else {
+                        *dst++ = *src++;
+                    }
+                }
+                *dst = '\0';
+            }
+        }
+    }
+    
+    return value;
+}
+
+
 
 // Exit the shell
 int lsh_exit(char **args) {

@@ -93,13 +93,14 @@ void free_table(TableData *table) {
     free(table);
 }
 
+
 /**
  * Create a copy of a DataValue
  */
 DataValue copy_data_value(const DataValue *src) {
     DataValue dest;
     dest.type = src->type;
-    dest.is_highlighted = src->is_highlighted;
+    dest.is_highlighted = src->is_highlighted;  // Make sure we preserve the highlighting flag
     
     switch (src->type) {
         case TYPE_STRING:
@@ -116,6 +117,8 @@ DataValue copy_data_value(const DataValue *src) {
     
     return dest;
 }
+
+
 
 /**
  * Free a DataValue
@@ -320,7 +323,7 @@ TableData* filter_table(TableData *input, char *field, char *op, char *value) {
 }
 
 /**
- * Print a table to the console with nice formatting
+ * Print a table to the console with nice formatting using Unicode box characters
  */
 void print_table(TableData *table) {
     if (!table || table->row_count == 0) {
@@ -396,89 +399,114 @@ void print_table(TableData *table) {
     // Print table header
     printf("\n");
     
-    // Print top border
-    printf("+");
+    // Use default color for all table borders
+    reset_color();
+    
+    // Print top border with Unicode box characters
+    printf("\u250C"); // Top-left corner ┌
     for (int i = 0; i < table->header_count; i++) {
         for (int j = 0; j < col_widths[i]; j++) {
-            printf("-");
+            printf("\u2500"); // Horizontal line ─
         }
-        printf("+");
+        if (i < table->header_count - 1) {
+            printf("\u252C"); // Top T-junction ┬
+        }
     }
-    printf("\n");
+    printf("\u2510\n"); // Top-right corner ┐
     
     // Print header row
-    printf("|");
+    printf("\u2502"); // Vertical line │
     for (int i = 0; i < table->header_count; i++) {
-        printf(" %-*s |", col_widths[i] - 2, table->headers[i]);
+        printf(" %-*s ", col_widths[i] - 2, table->headers[i]);
+        printf("\u2502"); // Vertical line │
     }
     printf("\n");
     
     // Print header/data separator
-    printf("+");
+    printf("\u251C"); // Left T-junction ├
     for (int i = 0; i < table->header_count; i++) {
         for (int j = 0; j < col_widths[i]; j++) {
-            printf("-");
+            printf("\u2500"); // Horizontal line ─
         }
-        printf("+");
+        if (i < table->header_count - 1) {
+            printf("\u253C"); // Cross junction ┼
+        }
     }
-    printf("\n");
+    printf("\u2524\n"); // Right T-junction ┤
     
     // Print data rows
     for (int i = 0; i < table->row_count; i++) {
-        // Check if this row should be highlighted (based on first column)
-        BOOL highlight_row = table->rows[i][0].is_highlighted;
+        // Always use green for processes (in ps command)
+        set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
         
-        // Apply highlighting if needed
-        if (highlight_row) {
-            set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-        }
-        
-        printf("|");
+        printf("\u2502"); // Vertical line │
         for (int j = 0; j < table->header_count; j++) {
             if (table->rows[i][j].type == TYPE_STRING || table->rows[i][j].type == TYPE_SIZE) {
-                printf(" %-*s |", col_widths[j] - 2, table->rows[i][j].value.str_val);
+                printf(" %-*s ", col_widths[j] - 2, table->rows[i][j].value.str_val);
             } else if (table->rows[i][j].type == TYPE_INT) {
-                printf(" %-*d |", col_widths[j] - 2, table->rows[i][j].value.int_val);
+                printf(" %-*d ", col_widths[j] - 2, table->rows[i][j].value.int_val);
             } else if (table->rows[i][j].type == TYPE_FLOAT) {
-                printf(" %-*.2f |", col_widths[j] - 2, table->rows[i][j].value.float_val);
+                printf(" %-*.2f ", col_widths[j] - 2, table->rows[i][j].value.float_val);
             }
-        }
-        printf("\n");
-        
-        // Reset color if we applied highlighting
-        if (highlight_row) {
+            
+            // Reset color before printing border
             reset_color();
-        }
-    }
-    
-    // Print bottom border
-    printf("+");
-    for (int i = 0; i < table->header_count; i++) {
-        for (int j = 0; j < col_widths[i]; j++) {
-            printf("-");
-        }
-        printf("+");
-    }
-    printf("\n");
-    
-    // Print headers again at the bottom if the listing is tall
-    if (needBottomHeader) {
-        // Print header row
-        printf("|");
-        for (int i = 0; i < table->header_count; i++) {
-            printf(" %-*s |", col_widths[i] - 2, table->headers[i]);
+            printf("\u2502"); // Vertical line │
+            
+            // Set green color back for next cell
+            set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
         }
         printf("\n");
         
-        // Print bottom border again
-        printf("+");
+        // Reset color after the row
+        reset_color();
+    }
+    
+    // If we need bottom header, use a middle separator instead of bottom border
+    if (needBottomHeader) {
+        // Print middle separator connecting to header
+        printf("\u251C"); // Left T-junction ├
         for (int i = 0; i < table->header_count; i++) {
             for (int j = 0; j < col_widths[i]; j++) {
-                printf("-");
+                printf("\u2500"); // Horizontal line ─
             }
-            printf("+");
+            if (i < table->header_count - 1) {
+                printf("\u253C"); // Cross junction ┼
+            }
+        }
+        printf("\u2524\n"); // Right T-junction ┤
+        
+        // Print header row
+        printf("\u2502"); // Vertical line │
+        for (int i = 0; i < table->header_count; i++) {
+            printf(" %-*s ", col_widths[i] - 2, table->headers[i]);
+            printf("\u2502"); // Vertical line │
         }
         printf("\n");
+        
+        // Print final bottom border
+        printf("\u2514"); // Bottom-left corner └
+        for (int i = 0; i < table->header_count; i++) {
+            for (int j = 0; j < col_widths[i]; j++) {
+                printf("\u2500"); // Horizontal line ─
+            }
+            if (i < table->header_count - 1) {
+                printf("\u2534"); // Bottom T-junction ┴
+            }
+        }
+        printf("\u2518\n"); // Bottom-right corner ┘
+    } else {
+        // No bottom header, just print bottom border
+        printf("\u2514"); // Bottom-left corner └
+        for (int i = 0; i < table->header_count; i++) {
+            for (int j = 0; j < col_widths[i]; j++) {
+                printf("\u2500"); // Horizontal line ─
+            }
+            if (i < table->header_count - 1) {
+                printf("\u2534"); // Bottom T-junction ┴
+            }
+        }
+        printf("\u2518\n"); // Bottom-right corner ┘
     }
     
     printf("\n");  // Extra line for spacing

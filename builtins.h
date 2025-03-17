@@ -55,9 +55,16 @@ int lsh_num_builtins(void);
 extern char *builtin_str[];
 extern int (*builtin_func[]) (char **);
 
-// Add filter commands
-extern char *filter_str[];
-extern TableData* (*filter_func[]) (TableData*, char**);
-extern int filter_count;
+/**
+ * Extract a string value from a JSON object
+ * 
+ * @param json The JSON string to parse
+ * @param key The key to find
+ * @return Allocated string containing the value (caller must free)
+ */
+char* extract_json_string(const char *json, const char *key);
+
+// Include filter command declarations from filters.h
+#include "filters.h"
 
 #endif // BUILTINS_H
