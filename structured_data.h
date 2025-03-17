@@ -28,6 +28,7 @@ typedef struct {
             char unit[8];
         } size_val;
     } value;
+    int is_highlighted;  // Flag for highlighting in tables
 } DataValue;
 
 // Table structure to hold rows and columns of data
@@ -62,5 +63,8 @@ void print_table(TableData *table);
 
 // Function to parse human-readable sizes
 long parse_size(const char *size_str);
+
+// Function to extract size in bytes from a formatted size string
+long extract_size_bytes(const char *size_str);
 
 #endif // STRUCTURED_DATA_H

@@ -4,6 +4,7 @@
  */
 
 #include "structured_data.h"
+#include "builtins.h"  // For set_color and reset_color functions
 
 /**
  * Create a new table with the given headers
@@ -98,9 +99,11 @@ void free_table(TableData *table) {
 DataValue copy_data_value(const DataValue *src) {
     DataValue dest;
     dest.type = src->type;
+    dest.is_highlighted = src->is_highlighted;
     
     switch (src->type) {
         case TYPE_STRING:
+        case TYPE_SIZE:
             dest.value.str_val = _strdup(src->value.str_val);
             break;
         case TYPE_INT:
@@ -108,9 +111,6 @@ DataValue copy_data_value(const DataValue *src) {
             break;
         case TYPE_FLOAT:
             dest.value.float_val = src->value.float_val;
-            break;
-        case TYPE_SIZE:
-            dest.value.size_val = src->value.size_val;
             break;
     }
     
@@ -123,7 +123,7 @@ DataValue copy_data_value(const DataValue *src) {
 void free_data_value(DataValue *value) {
     if (!value) return;
     
-    if (value->type == TYPE_STRING && value->value.str_val) {
+    if ((value->type == TYPE_STRING || value->type == TYPE_SIZE) && value->value.str_val) {
         free(value->value.str_val);
         value->value.str_val = NULL;
     }
@@ -139,6 +139,7 @@ long parse_size(const char *size_str) {
     // Skip whitespace between number and unit
     while (*unit && isspace(*unit)) unit++;
     
+    // Handle case insensitive units
     if (strcasecmp(unit, "kb") == 0 || strcasecmp(unit, "k") == 0) {
         return (long)(size * 1024);
     } else if (strcasecmp(unit, "mb") == 0 || strcasecmp(unit, "m") == 0) {
@@ -175,6 +176,7 @@ long extract_size_bytes(const char *size_str) {
     double size_val = 0;
     char unit[8] = "";
     
+    // Try the format with float + space + unit (e.g., "10.5 MB")
     if (sscanf(size_str, "%lf %7s", &size_val, unit) == 2) {
         if (strcasecmp(unit, "B") == 0) {
             return (long)size_val;
@@ -221,7 +223,8 @@ TableData* filter_table(TableData *input, char *field, char *op, char *value) {
     }
     
     // Special handling for size field - parse human-readable sizes
-    int is_size_field = (strcasecmp(field, "size") == 0);
+    // Modified to handle both "size" and "Memory" columns
+    int is_size_field = (strcasecmp(field, "size") == 0 || strcasecmp(field, "Memory") == 0);
     long value_size = is_size_field ? parse_size(value) : 0;
     
     // Filter rows based on condition
@@ -229,7 +232,8 @@ TableData* filter_table(TableData *input, char *field, char *op, char *value) {
         int include_row = 0;
         
         // Handle based on data type
-        if (input->rows[i][field_idx].type == TYPE_STRING) {
+        if (input->rows[i][field_idx].type == TYPE_STRING || 
+            input->rows[i][field_idx].type == TYPE_SIZE) {
             char *row_value = input->rows[i][field_idx].value.str_val;
             
             // Special handling for size field with values like "10.5 KB"
@@ -324,6 +328,30 @@ void print_table(TableData *table) {
         return;
     }
     
+    // Get handle to console for output
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    
+    // Get console screen size
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    int consoleHeight = 0;
+    if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+        consoleHeight = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    } else {
+        // Fallback if we can't get console info
+        consoleHeight = 25; // Common default height
+    }
+    
+    // Calculate total height of the table listing
+    // Title line + blank line = 2
+    // Top header (3 lines)
+    // One line per row
+    // Bottom border line
+    // Total = 2 + 3 + table->row_count + 1 = 6 + table->row_count
+    int listingHeight = 6 + table->row_count;
+    
+    // Determine if the listing will be taller than the console height
+    int needBottomHeader = (listingHeight > consoleHeight);
+    
     // Calculate column widths
     int *col_widths = (int*)malloc(table->header_count * sizeof(int));
     if (!col_widths) {
@@ -339,7 +367,7 @@ void print_table(TableData *table) {
     // Check cell widths
     for (int i = 0; i < table->row_count; i++) {
         for (int j = 0; j < table->header_count; j++) {
-            if (table->rows[i][j].type == TYPE_STRING) {
+            if (table->rows[i][j].type == TYPE_STRING || table->rows[i][j].type == TYPE_SIZE) {
                 int len = strlen(table->rows[i][j].value.str_val);
                 if (len > col_widths[j]) {
                     col_widths[j] = len;
@@ -397,9 +425,17 @@ void print_table(TableData *table) {
     
     // Print data rows
     for (int i = 0; i < table->row_count; i++) {
+        // Check if this row should be highlighted (based on first column)
+        BOOL highlight_row = table->rows[i][0].is_highlighted;
+        
+        // Apply highlighting if needed
+        if (highlight_row) {
+            set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        }
+        
         printf("|");
         for (int j = 0; j < table->header_count; j++) {
-            if (table->rows[i][j].type == TYPE_STRING) {
+            if (table->rows[i][j].type == TYPE_STRING || table->rows[i][j].type == TYPE_SIZE) {
                 printf(" %-*s |", col_widths[j] - 2, table->rows[i][j].value.str_val);
             } else if (table->rows[i][j].type == TYPE_INT) {
                 printf(" %-*d |", col_widths[j] - 2, table->rows[i][j].value.int_val);
@@ -408,6 +444,11 @@ void print_table(TableData *table) {
             }
         }
         printf("\n");
+        
+        // Reset color if we applied highlighting
+        if (highlight_row) {
+            reset_color();
+        }
     }
     
     // Print bottom border
@@ -418,7 +459,29 @@ void print_table(TableData *table) {
         }
         printf("+");
     }
-    printf("\n\n");
+    printf("\n");
+    
+    // Print headers again at the bottom if the listing is tall
+    if (needBottomHeader) {
+        // Print header row
+        printf("|");
+        for (int i = 0; i < table->header_count; i++) {
+            printf(" %-*s |", col_widths[i] - 2, table->headers[i]);
+        }
+        printf("\n");
+        
+        // Print bottom border again
+        printf("+");
+        for (int i = 0; i < table->header_count; i++) {
+            for (int j = 0; j < col_widths[i]; j++) {
+                printf("-");
+            }
+            printf("+");
+        }
+        printf("\n");
+    }
+    
+    printf("\n");  // Extra line for spacing
     
     free(col_widths);
 }

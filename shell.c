@@ -78,9 +78,16 @@ int lsh_execute_piped(char ***commands) {
         
         // First command in pipeline
         if (i == 0) {
-            // Only 'ls' and 'dir' can produce structured data for now
+            // Check for commands that can produce structured data
             if (strcmp(args[0], "ls") == 0 || strcmp(args[0], "dir") == 0) {
                 result = lsh_dir_structured(args);
+                if (!result) {
+                    fprintf(stderr, "lsh: error generating structured output for '%s'\n", args[0]);
+                    return 1;
+                }
+            } else if (strcmp(args[0], "ps") == 0) {
+                // Add support for ps command to produce structured data
+                result = lsh_ps_structured(args);
                 if (!result) {
                     fprintf(stderr, "lsh: error generating structured output for '%s'\n", args[0]);
                     return 1;

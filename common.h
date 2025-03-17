@@ -28,6 +28,11 @@
 #define LSH_TOK_BUFSIZE 64
 #define LSH_TOK_DELIM " \t\r\n\a"
 
+
+#ifndef CP_UTF8
+#define CP_UTF8 65001
+#endif
+
 // Key codes
 #define KEY_TAB 9
 #define KEY_BACKSPACE 8

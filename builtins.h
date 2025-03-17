@@ -18,6 +18,10 @@
 #define COLOR_PREPROCESSOR 14  // FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY (yellow)
 #define COLOR_IDENTIFIER 15 // FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY
 
+// Add declarations for color functions
+void set_color(int color);
+void reset_color();
+
 // Built-in command declarations
 int lsh_cd(char **args);
 int lsh_help(char **args);
@@ -35,9 +39,11 @@ int lsh_copy(char **args);
 int lsh_paste(char **args);
 int lsh_move(char **args);
 int lsh_ps(char **args);
+int lsh_news(char **args);
 
-// Command with structured output
+// Commands with structured output
 TableData* lsh_dir_structured(char **args);
+TableData* lsh_ps_structured(char **args);
 
 // Add command to history
 void lsh_add_to_history(const char *command);

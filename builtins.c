@@ -18,8 +18,14 @@
 #include "filters.h"
 #include <Psapi.h>
 #include <tlhelp32.h>
+#include <wininet.h>
+#pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
+
+#define BUFFER_SIZE 8192
+#define GITHUB_API_HOST "api.github.com"
+#define GITHUB_API_PATH "/repos/marcusDenslow/shellTest/commits"
 
 // History command implementation
 #define HISTORY_SIZE 10
@@ -79,6 +85,7 @@ char *builtin_str[] = {
 "move",
 "mv",
 "ps",
+"news",
 };
 
 // Array of built-in command function pointers
@@ -104,6 +111,7 @@ int (*builtin_func[]) (char **) = {
 &lsh_move,
 &lsh_move,
 &lsh_ps,
+&lsh_news,
 };
 
 // Return the number of built-in commands
@@ -1432,8 +1440,9 @@ void print_file_with_highlighting(FILE *file, FileType type) {
   }
 }
 
+
 /**
-* Display file contents with line numbers and optional syntax highlighting
+* Display file contents with optional line numbers and syntax highlighting
 */
 int lsh_cat(char **args) {
   if (args[1] == NULL) {
@@ -1443,11 +1452,16 @@ int lsh_cat(char **args) {
   
   // Check for flags (e.g., -s for syntax highlighting)
   int use_highlighting = 0; // Default to no highlighting
+  int use_line_numbers = 0; // Default to no line numbers
   int start_index = 1;
   
   if (args[1][0] == '-') {
       if (strcmp(args[1], "-s") == 0 || strcmp(args[1], "--syntax") == 0) {
           use_highlighting = 1;
+          use_line_numbers = 1; // Syntax highlighting includes line numbers
+          start_index = 2;
+      } else if (strcmp(args[1], "-n") == 0 || strcmp(args[1], "--number") == 0) {
+          use_line_numbers = 1; // Line numbers only
           start_index = 2;
       }
       
@@ -1482,7 +1496,7 @@ int lsh_cat(char **args) {
           
           // Use the highlighting function that includes line numbers
           print_file_with_highlighting(file, type);
-      } else {
+      } else if (use_line_numbers) {
           // Read and print file with line numbers only (no highlighting)
           char line[4096];
           int line_number = 1;
@@ -1499,6 +1513,23 @@ int lsh_cat(char **args) {
                   printf("\n");
               }
           }
+      } else {
+          // Fast mode - read and write in binary chunks without line numbers
+          char buffer[8192]; // Larger buffer for faster reads
+          size_t bytes_read;
+          
+          // Set file and stdout to binary mode to avoid newline translations
+          int old_file_mode = _setmode(_fileno(file), _O_BINARY);
+          int old_stdout_mode = _setmode(_fileno(stdout), _O_BINARY);
+          
+          // Read and write in chunks
+          while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+              fwrite(buffer, 1, bytes_read, stdout);
+          }
+          
+          // Reset modes to original values
+          _setmode(_fileno(stdout), old_stdout_mode);
+          _setmode(_fileno(file), old_file_mode);
       }
       
       // Check for read errors
@@ -1522,6 +1553,8 @@ int lsh_cat(char **args) {
   
   return success;
 }
+
+
 
 // Delete files
 int lsh_del(char **args) {
@@ -2594,6 +2627,301 @@ int lsh_ps(char **args) {
     return 1;
 }
 
+
+char* extract_json_string(const char* json, const char* field) {
+    static char result[1024];
+    char search_term[256];
+    char* start;
+    char* end;
+    
+    // Construct the search term: "field":"
+    sprintf(search_term, "\"%s\":\"", field);
+    
+    // Find the field in the JSON
+    start = strstr(json, search_term);
+    if (!start) {
+        // Try without quotes for object/array values
+        sprintf(search_term, "\"%s\":", field);
+        start = strstr(json, search_term);
+        if (!start) {
+            return NULL;
+        }
+        
+        // Skip past the field name and colon
+        start += strlen(search_term);
+        
+        // Check if it's an object or array
+        if (*start == '{' || *start == '[') {
+            return "Object or array (not a simple string)";
+        }
+        
+        return NULL;
+    }
+    
+    // Skip past the field name and quotes
+    start += strlen(search_term);
+    
+    // Find the closing quote
+    end = strchr(start, '"');
+    if (!end) {
+        return NULL;
+    }
+    
+    // Copy the value to our result buffer
+    int length = end - start;
+    if (length >= sizeof(result) - 1) {
+        length = sizeof(result) - 1;
+    }
+    
+    strncpy(result, start, length);
+    result[length] = '\0';
+    
+    return result;
+}
+
+/**
+ * Get the latest commit message from GitHub
+ */
+int lsh_news(char **args) {
+    HINTERNET hInternet, hConnect, hRequest;
+    char buffer[BUFFER_SIZE];
+    DWORD bytesRead;
+    char response[32768] = "";
+    
+    // Print starting message
+    printf("\nFetching latest news from GitHub...\n\n");
+    
+    // Initialize WinINet
+    hInternet = InternetOpen(
+        "LSH GitHub Commit Fetcher/1.0",
+        INTERNET_OPEN_TYPE_DIRECT,
+        NULL,
+        NULL,
+        0);
+    
+    if (!hInternet) {
+        fprintf(stderr, "Error initializing Internet connection: %lu\n", GetLastError());
+        return 1;
+    }
+    
+    // Connect to GitHub API
+    hConnect = InternetConnect(
+        hInternet,
+        GITHUB_API_HOST,
+        INTERNET_DEFAULT_HTTPS_PORT,
+        NULL,
+        NULL,
+        INTERNET_SERVICE_HTTP,
+        0,
+        0);
+    
+    if (!hConnect) {
+        fprintf(stderr, "Error connecting to GitHub API: %lu\n", GetLastError());
+        InternetCloseHandle(hInternet);
+        return 1;
+    }
+    
+    // Create HTTP request
+    hRequest = HttpOpenRequest(
+        hConnect,
+        "GET",
+        GITHUB_API_PATH,
+        NULL,
+        NULL,
+        NULL,
+        INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD,
+        0);
+    
+    if (!hRequest) {
+        fprintf(stderr, "Error creating HTTP request: %lu\n", GetLastError());
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hInternet);
+        return 1;
+    }
+    
+    // Add User-Agent header (required by GitHub API)
+    if (!HttpAddRequestHeaders(hRequest, 
+        "User-Agent: LSH GitHub Commit Fetcher\r\n"
+        "Accept: application/vnd.github.v3+json\r\n", 
+        -1, 
+        HTTP_ADDREQ_FLAG_ADD)) {
+        fprintf(stderr, "Error adding request headers: %lu\n", GetLastError());
+        InternetCloseHandle(hRequest);
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hInternet);
+        return 1;
+    }
+    
+    // Send the request
+    if (!HttpSendRequest(hRequest, NULL, 0, NULL, 0)) {
+        fprintf(stderr, "Error sending HTTP request: %lu\n", GetLastError());
+        InternetCloseHandle(hRequest);
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hInternet);
+        return 1;
+    }
+    
+    // Check if request succeeded
+    DWORD statusCode = 0;
+    DWORD statusCodeSize = sizeof(statusCode);
+    if (!HttpQueryInfo(hRequest, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, 
+                     &statusCode, &statusCodeSize, NULL)) {
+        fprintf(stderr, "Error querying HTTP status: %lu\n", GetLastError());
+        InternetCloseHandle(hRequest);
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hInternet);
+        return 1;
+    }
+    
+    if (statusCode != 200) {
+        fprintf(stderr, "GitHub API returned error: HTTP %lu\n", statusCode);
+        InternetCloseHandle(hRequest);
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hInternet);
+        return 1;
+    }
+    
+    // Read the response
+    while (InternetReadFile(hRequest, buffer, BUFFER_SIZE - 1, &bytesRead) && bytesRead > 0) {
+        buffer[bytesRead] = '\0';
+        strcat(response, buffer);
+    }
+    
+    // Clean up
+    InternetCloseHandle(hRequest);
+    InternetCloseHandle(hConnect);
+    InternetCloseHandle(hInternet);
+    
+    // Extract and display commit info
+    if (strlen(response) > 0) {
+        // Extract the first commit (latest)
+        char* sha = extract_json_string(response, "sha");
+        char* author = extract_json_string(response, "name");
+        char* date = extract_json_string(response, "date");
+        
+        // First, find the commit message in the response
+        char* message = NULL;
+        char* commit_pos = strstr(response, "\"commit\":");
+        
+        if (commit_pos) {
+            // Now look for the message within the commit object
+            char* message_pos = strstr(commit_pos, "\"message\":");
+            if (message_pos) {
+                message_pos += 11; // Skip past "message":"
+                
+                // Find the closing quote, with escaping handled
+                char* message_end = message_pos;
+                int in_escape = 0;
+                
+                while (*message_end) {
+                    if (in_escape) {
+                        in_escape = 0;
+                    } else if (*message_end == '\\') {
+                        in_escape = 1;
+                    } else if (*message_end == '"') {
+                        break;
+                    }
+                    message_end++;
+                }
+                
+                if (*message_end == '"') {
+                    int message_len = message_end - message_pos;
+                    message = (char*)malloc(message_len + 1);
+                    if (message) {
+                        strncpy(message, message_pos, message_len);
+                        message[message_len] = '\0';
+                    }
+                }
+            }
+        }
+
+    set_color(COLOR_KEYWORD);
+// Normal top border (unchanged)
+printf("\u250C\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n");
+// Move right border one character left by putting the vertical bar BEFORE the last space
+printf("\u2502         LATEST REPOSITORY NEWS        \u2502 \n");
+// Normal bottom border (unchanged)
+printf("\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\n");
+reset_color();
+
+  
+
+            
+        if (sha) {
+            printf("Commit: ");
+            set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+            printf("%.8s", sha);  // Just the first 8 characters of the SHA
+            reset_color();
+            printf("\n");
+        }
+        
+        if (author) {
+            printf("Author: %s\n", author);
+        }
+        
+        if (date) {
+            // Format date nicely if possible (GitHub date format: 2023-03-17T12:34:56Z)
+            char year[5], month[3], day[3], time[9];
+            if (sscanf(date, "%4s-%2s-%2sT%8s", year, month, day, time) == 4) {
+                printf("Date:   %s-%s-%s %s\n", year, month, day, time);
+            } else {
+                printf("Date:   %s\n", date);
+            }
+        }
+        
+        printf("\n");
+        
+        if (message) {
+            set_color(FOREGROUND_RED | FOREGROUND_INTENSITY);
+            printf("Commit Message:\n");
+            reset_color();
+            
+            // Word wrap the message at ~70 chars for better display
+            int line_length = 0;
+            char* word_start = message;
+            
+            for (char* p = message; *p; p++) {
+                if (*p == ' ' || *p == '\n') {
+                    // Found a word boundary, print the word
+                    int word_len = p - word_start;
+                    
+                    // Check if we need to wrap
+                    if (line_length + word_len > 70 && line_length > 0) {
+                        printf("\n");
+                        line_length = 0;
+                    }
+                    
+                    // Print the word
+                    printf("%.*s%c", word_len, word_start, *p);
+                    line_length += word_len + 1;
+                    
+                    // If this was a newline, reset line_length
+                    if (*p == '\n') {
+                        line_length = 0;
+                    }
+                    
+                    // Move to the next word
+                    word_start = p + 1;
+                }
+            }
+            
+            // Print any remaining text
+            if (word_start && *word_start) {
+                printf("%s", word_start);
+            }
+            
+            printf("\n\n");
+            free(message);
+        } else {
+            printf("No commit message found.\n\n");
+        }
+    } else {
+        fprintf(stderr, "Error: Empty response from GitHub API\n");
+        return 1;
+    }
+    
+    return 1;
+}
 
 // Exit the shell
 int lsh_exit(char **args) {
