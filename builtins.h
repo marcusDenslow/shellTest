@@ -6,6 +6,7 @@
 #ifndef BUILTINS_H
 #define BUILTINS_H
 
+#include "image_display.h"
 #include "common.h"
 #include "structured_data.h"  // Add this include
 
@@ -40,6 +41,7 @@ int lsh_paste(char **args);
 int lsh_move(char **args);
 int lsh_ps(char **args);
 int lsh_news(char **args);
+int lsh_img(char **args);
 
 // Commands with structured output
 TableData* lsh_dir_structured(char **args);

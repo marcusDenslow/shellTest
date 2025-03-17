@@ -86,6 +86,7 @@ char *builtin_str[] = {
 "mv",
 "ps",
 "news",
+"img",
 };
 
 // Array of built-in command function pointers
@@ -112,6 +113,7 @@ int (*builtin_func[]) (char **) = {
 &lsh_move,
 &lsh_ps,
 &lsh_news,
+&lsh_img,
 };
 
 // Return the number of built-in commands
