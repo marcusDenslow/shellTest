@@ -817,34 +817,617 @@ void print_html_file_highlighted(FILE *file) {
 }
 
 /**
-* Print a file with language-specific syntax highlighting
+* Print C/C++ file with syntax highlighting and line numbers
+*/
+void print_c_file_highlighted_with_line_numbers(FILE *file) {
+  static const char *c_keywords[] = {
+      "auto", "break", "case", "char", "const", "continue", "default", "do",
+      "double", "else", "enum", "extern", "float", "for", "goto", "if",
+      "int", "long", "register", "return", "short", "signed", "sizeof", "static",
+      "struct", "switch", "typedef", "union", "unsigned", "void", "volatile", "while",
+      "include", "define", "ifdef", "ifndef", "endif", "pragma", "error", "warning"
+  };
+  static const int c_keywords_count = sizeof(c_keywords) / sizeof(c_keywords[0]);
+  
+  char line[4096];
+  char word[256];
+  int in_comment = 0;
+  int in_string = 0;
+  int in_char = 0;
+  int in_preprocessor = 0;
+  int line_number = 1;
+  
+  // Process file line by line
+  while (fgets(line, sizeof(line), file) != NULL) {
+      // Print line number first
+      printf("%5d\t", line_number++);
+      
+      char *p = line;
+      int word_pos = 0;
+      
+      while (*p) {
+          // Already in a multi-line comment
+          if (in_comment) {
+              set_color(COLOR_COMMENT);
+              putchar(*p);
+              
+              if (*p == '*' && *(p+1) == '/') {
+                  putchar(*(p+1));
+                  p++;
+                  in_comment = 0;
+                  reset_color();
+              }
+          }
+          // Line starts with # (preprocessor directive)
+          else if (p == line && *p == '#') {
+              in_preprocessor = 1;
+              set_color(COLOR_PREPROCESSOR);
+              putchar(*p);
+          }
+          // Inside a string literal
+          else if (in_string) {
+              set_color(COLOR_STRING);
+              putchar(*p);
+              
+              if (*p == '\\' && *(p+1)) {
+                  putchar(*(p+1));
+                  p++;
+              } else if (*p == '"') {
+                  in_string = 0;
+                  reset_color();
+              }
+          }
+          // Inside a character literal
+          else if (in_char) {
+              set_color(COLOR_STRING);
+              putchar(*p);
+              
+              if (*p == '\\' && *(p+1)) {
+                  putchar(*(p+1));
+                  p++;
+              } else if (*p == '\'') {
+                  in_char = 0;
+                  reset_color();
+              }
+          }
+          // Start of a comment
+          else if (*p == '/' && *(p+1) == '/') {
+              // Print any word we've been accumulating
+              if (word_pos > 0) {
+                  word[word_pos] = '\0';
+                  if (is_keyword(word, c_keywords, c_keywords_count)) {
+                      set_color(COLOR_KEYWORD);
+                      printf("%s", word);
+                      reset_color();
+                  } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+                      set_color(COLOR_NUMBER);
+                      printf("%s", word);
+                      reset_color();
+                  } else {
+                      printf("%s", word);
+                  }
+                  word_pos = 0;
+              }
+              
+              set_color(COLOR_COMMENT);
+              putchar(*p);
+              putchar(*(p+1));
+              p++;
+              
+              // Print the rest of the line as a comment
+              p++;
+              while (*p) {
+                  putchar(*p++);
+              }
+              reset_color();
+              break;
+          }
+          // Start of multi-line comment
+          else if (*p == '/' && *(p+1) == '*') {
+              // Print any word we've been accumulating
+              if (word_pos > 0) {
+                  word[word_pos] = '\0';
+                  if (is_keyword(word, c_keywords, c_keywords_count)) {
+                      set_color(COLOR_KEYWORD);
+                      printf("%s", word);
+                      reset_color();
+                  } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+                      set_color(COLOR_NUMBER);
+                      printf("%s", word);
+                      reset_color();
+                  } else {
+                      printf("%s", word);
+                  }
+                  word_pos = 0;
+              }
+              
+              in_comment = 1;
+              set_color(COLOR_COMMENT);
+              putchar(*p);
+              putchar(*(p+1));
+              p++;
+          }
+          // Start of string literal
+          else if (*p == '"') {
+              // Print any word we've been accumulating
+              if (word_pos > 0) {
+                  word[word_pos] = '\0';
+                  if (is_keyword(word, c_keywords, c_keywords_count)) {
+                      set_color(COLOR_KEYWORD);
+                      printf("%s", word);
+                      reset_color();
+                  } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+                      set_color(COLOR_NUMBER);
+                      printf("%s", word);
+                      reset_color();
+                  } else {
+                      printf("%s", word);
+                  }
+                  word_pos = 0;
+              }
+              
+              in_string = 1;
+              set_color(COLOR_STRING);
+              putchar(*p);
+          }
+          // Start of character literal
+          else if (*p == '\'') {
+              // Print any word we've been accumulating
+              if (word_pos > 0) {
+                  word[word_pos] = '\0';
+                  if (is_keyword(word, c_keywords, c_keywords_count)) {
+                      set_color(COLOR_KEYWORD);
+                      printf("%s", word);
+                      reset_color();
+                  } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+                      set_color(COLOR_NUMBER);
+                      printf("%s", word);
+                      reset_color();
+                  } else {
+                      printf("%s", word);
+                  }
+                  word_pos = 0;
+              }
+              
+              in_char = 1;
+              set_color(COLOR_STRING);
+              putchar(*p);
+          }
+          // Word boundary
+          else if (is_separator(*p)) {
+              // Print any word we've been accumulating
+              if (word_pos > 0) {
+                  word[word_pos] = '\0';
+                  
+                  // Check if it's a keyword or a number
+                  if (is_keyword(word, c_keywords, c_keywords_count)) {
+                      set_color(COLOR_KEYWORD);
+                      printf("%s", word);
+                      reset_color();
+                  } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+                      set_color(COLOR_NUMBER);
+                      printf("%s", word);
+                      reset_color();
+                  } else {
+                      // Regular identifier
+                      printf("%s", word);
+                  }
+                  
+                  word_pos = 0;
+              }
+              
+              // Print the separator
+              if (in_preprocessor && *p != '\n') {
+                  set_color(COLOR_PREPROCESSOR);
+                  putchar(*p);
+                  reset_color();
+              } else {
+                  putchar(*p);
+              }
+              
+              // End of preprocessor directive
+              if (in_preprocessor && *p == '\n') {
+                  in_preprocessor = 0;
+                  reset_color();
+              }
+          }
+          // Part of a word
+          else {
+              if (word_pos < sizeof(word) - 1) {
+                  word[word_pos++] = *p;
+              }
+              // DON'T print the character here - we'll print the whole word when we hit a boundary
+          }
+          
+          p++;
+      }
+      
+      // Handle word at end of line if there is one
+      if (word_pos > 0) {
+          word[word_pos] = '\0';
+          
+          if (is_keyword(word, c_keywords, c_keywords_count)) {
+              set_color(COLOR_KEYWORD);
+              printf("%s", word);
+              reset_color();
+          } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+              set_color(COLOR_NUMBER);
+              printf("%s", word);
+              reset_color();
+          } else {
+              printf("%s", word);
+          }
+      }
+  }
+  
+  reset_color();
+}
+
+/**
+* Print Python file with syntax highlighting and line numbers
+*/
+void print_py_file_highlighted_with_line_numbers(FILE *file) {
+  static const char *py_keywords[] = {
+      "and", "as", "assert", "break", "class", "continue", "def", "del",
+      "elif", "else", "except", "False", "finally", "for", "from", "global",
+      "if", "import", "in", "is", "lambda", "None", "nonlocal", "not",
+      "or", "pass", "raise", "return", "True", "try", "while", "with", "yield"
+  };
+  static const int py_keywords_count = sizeof(py_keywords) / sizeof(py_keywords[0]);
+  
+  char line[4096];
+  char word[256];
+  int in_string_single = 0;
+  int in_string_double = 0;
+  int in_triple_single = 0;
+  int in_triple_double = 0;
+  int line_number = 1;
+  
+  // Process file line by line
+  while (fgets(line, sizeof(line), file) != NULL) {
+      // Print line number first
+      printf("%5d\t", line_number++);
+      
+      char *p = line;
+      int word_pos = 0;
+      
+      while (*p) {
+          // Already in a string
+          if (in_string_single || in_string_double || in_triple_single || in_triple_double) {
+              set_color(COLOR_STRING);
+              putchar(*p);
+              
+              if (in_string_single && *p == '\'') {
+                  in_string_single = 0;
+                  reset_color();
+              } else if (in_string_double && *p == '"') {
+                  in_string_double = 0;
+                  reset_color();
+              } else if (in_triple_single && *p == '\'' && *(p+1) == '\'' && *(p+2) == '\'') {
+                  putchar(*(p+1));
+                  putchar(*(p+2));
+                  p += 2;
+                  in_triple_single = 0;
+                  reset_color();
+              } else if (in_triple_double && *p == '"' && *(p+1) == '"' && *(p+2) == '"') {
+                  putchar(*(p+1));
+                  putchar(*(p+2));
+                  p += 2;
+                  in_triple_double = 0;
+                  reset_color();
+              }
+          }
+          // Start of a comment
+          else if (*p == '#') {
+              // Print any word we've been accumulating
+              if (word_pos > 0) {
+                  word[word_pos] = '\0';
+                  if (is_keyword(word, py_keywords, py_keywords_count)) {
+                      set_color(COLOR_KEYWORD);
+                      printf("%s", word);
+                      reset_color();
+                  } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+                      set_color(COLOR_NUMBER);
+                      printf("%s", word);
+                      reset_color();
+                  } else {
+                      printf("%s", word);
+                  }
+                  word_pos = 0;
+              }
+              
+              set_color(COLOR_COMMENT);
+              // Print the rest of the line as a comment
+              while (*p) {
+                  putchar(*p++);
+              }
+              reset_color();
+              break;
+          }
+          // Start of triple quoted string
+          else if (*p == '\'' && *(p+1) == '\'' && *(p+2) == '\'') {
+              // Print any word we've been accumulating
+              if (word_pos > 0) {
+                  word[word_pos] = '\0';
+                  if (is_keyword(word, py_keywords, py_keywords_count)) {
+                      set_color(COLOR_KEYWORD);
+                      printf("%s", word);
+                      reset_color();
+                  } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+                      set_color(COLOR_NUMBER);
+                      printf("%s", word);
+                      reset_color();
+                  } else {
+                      printf("%s", word);
+                  }
+                  word_pos = 0;
+              }
+              
+              in_triple_single = 1;
+              set_color(COLOR_STRING);
+              putchar(*p);
+              putchar(*(p+1));
+              putchar(*(p+2));
+              p += 2;
+          }
+          else if (*p == '"' && *(p+1) == '"' && *(p+2) == '"') {
+              // Print any word we've been accumulating
+              if (word_pos > 0) {
+                  word[word_pos] = '\0';
+                  if (is_keyword(word, py_keywords, py_keywords_count)) {
+                      set_color(COLOR_KEYWORD);
+                      printf("%s", word);
+                      reset_color();
+                  } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+                      set_color(COLOR_NUMBER);
+                      printf("%s", word);
+                      reset_color();
+                  } else {
+                      printf("%s", word);
+                  }
+                  word_pos = 0;
+              }
+              
+              in_triple_double = 1;
+              set_color(COLOR_STRING);
+              putchar(*p);
+              putchar(*(p+1));
+              putchar(*(p+2));
+              p += 2;
+          }
+          // Start of single quoted string
+          else if (*p == '\'') {
+              // Print any word we've been accumulating
+              if (word_pos > 0) {
+                  word[word_pos] = '\0';
+                  if (is_keyword(word, py_keywords, py_keywords_count)) {
+                      set_color(COLOR_KEYWORD);
+                      printf("%s", word);
+                      reset_color();
+                  } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+                      set_color(COLOR_NUMBER);
+                      printf("%s", word);
+                      reset_color();
+                  } else {
+                      printf("%s", word);
+                  }
+                  word_pos = 0;
+              }
+              
+              in_string_single = 1;
+              set_color(COLOR_STRING);
+              putchar(*p);
+          }
+          // Start of double quoted string
+          else if (*p == '"') {
+              // Print any word we've been accumulating
+              if (word_pos > 0) {
+                  word[word_pos] = '\0';
+                  if (is_keyword(word, py_keywords, py_keywords_count)) {
+                      set_color(COLOR_KEYWORD);
+                      printf("%s", word);
+                      reset_color();
+                  } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+                      set_color(COLOR_NUMBER);
+                      printf("%s", word);
+                      reset_color();
+                  } else {
+                      printf("%s", word);
+                  }
+                  word_pos = 0;
+              }
+              
+              in_string_double = 1;
+              set_color(COLOR_STRING);
+              putchar(*p);
+          }
+          // Word boundary
+          else if (is_separator(*p)) {
+              if (word_pos > 0) {
+                  word[word_pos] = '\0';
+                  
+                  // Check if it's a keyword or a number
+                  if (is_keyword(word, py_keywords, py_keywords_count)) {
+                      set_color(COLOR_KEYWORD);
+                      printf("%s", word);
+                      reset_color();
+                  } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+                      set_color(COLOR_NUMBER);
+                      printf("%s", word);
+                      reset_color();
+                  } else {
+                      // Regular identifier
+                      printf("%s", word);
+                  }
+                  
+                  word_pos = 0;
+              }
+              
+              // Print the separator
+              putchar(*p);
+          }
+          // Part of a word
+          else {
+              if (word_pos < sizeof(word) - 1) {
+                  word[word_pos++] = *p;
+              }
+              // Don't print characters immediately - wait until we have a complete word
+          }
+          
+          p++;
+      }
+      
+      // Handle word at end of line
+      if (word_pos > 0) {
+          word[word_pos] = '\0';
+          
+          if (is_keyword(word, py_keywords, py_keywords_count)) {
+              set_color(COLOR_KEYWORD);
+              printf("%s", word);
+              reset_color();
+          } else if (isdigit(word[0]) || (word[0] == '-' && isdigit(word[1]))) {
+              set_color(COLOR_NUMBER);
+              printf("%s", word);
+              reset_color();
+          } else {
+              printf("%s", word);
+          }
+      }
+  }
+  
+  reset_color();
+}
+
+/**
+* Print HTML/XML file with syntax highlighting and line numbers
+*/
+void print_html_file_highlighted_with_line_numbers(FILE *file) {
+  char line[4096];
+  int in_tag = 0;
+  int in_attribute = 0;
+  int in_string = 0;
+  int in_comment = 0;
+  int line_number = 1;
+  
+  // Process file line by line
+  while (fgets(line, sizeof(line), file) != NULL) {
+      // Print line number first
+      printf("%5d\t", line_number++);
+      
+      char *p = line;
+      
+      while (*p) {
+          // Inside a comment
+          if (in_comment) {
+              set_color(COLOR_COMMENT);
+              putchar(*p);
+              
+              if (*p == '-' && *(p+1) == '-' && *(p+2) == '>') {
+                  putchar(*(p+1));
+                  putchar(*(p+2));
+                  p += 2;
+                  in_comment = 0;
+                  reset_color();
+              }
+          }
+          // Start of a comment
+          else if (*p == '<' && *(p+1) == '!' && *(p+2) == '-' && *(p+3) == '-') {
+              in_comment = 1;
+              set_color(COLOR_COMMENT);
+              putchar(*p);
+              putchar(*(p+1));
+              putchar(*(p+2));
+              putchar(*(p+3));
+              p += 3;
+          }
+          // Inside a string
+          else if (in_string) {
+              set_color(COLOR_STRING);
+              putchar(*p);
+              
+              if ((*p == '"' || *p == '\'') && *(p-1) != '\\') {
+                  in_string = 0;
+                  if (in_tag) set_color(COLOR_KEYWORD);
+                  else reset_color();
+              }
+          }
+          // Start of a tag
+          else if (*p == '<' && *(p+1) != '!') {
+              in_tag = 1;
+              in_attribute = 0;
+              set_color(COLOR_KEYWORD);
+              putchar(*p);
+          }
+          // End of a tag
+          else if (*p == '>' && in_tag) {
+              in_tag = 0;
+              in_attribute = 0;
+              putchar(*p);
+              reset_color();
+          }
+          // Inside a tag, start of attribute
+          else if (in_tag && *p == ' ' && !in_attribute) {
+              in_attribute = 1;
+              putchar(*p);
+              set_color(COLOR_IDENTIFIER);
+          }
+          // Start of string inside tag
+          else if (in_tag && (*p == '"' || *p == '\'')) {
+              in_string = 1;
+              putchar(*p);
+          }
+          // Equals sign in attribute
+          else if (in_tag && in_attribute && *p == '=') {
+              putchar(*p);
+              set_color(COLOR_KEYWORD);
+          }
+          // Just print the character
+          else {
+              putchar(*p);
+          }
+          
+          p++;
+      }
+  }
+  
+  reset_color();
+}
+
+/**
+* Print a file with language-specific syntax highlighting and line numbers
 */
 void print_file_with_highlighting(FILE *file, FileType type) {
   switch (type) {
       case FILE_TYPE_C:
       case FILE_TYPE_CPP:
       case FILE_TYPE_H:
-          print_c_file_highlighted(file);
+          print_c_file_highlighted_with_line_numbers(file);
           break;
       case FILE_TYPE_PY:
-          print_py_file_highlighted(file);
+          print_py_file_highlighted_with_line_numbers(file);
           break;
       case FILE_TYPE_HTML:
-          print_html_file_highlighted(file);
+          print_html_file_highlighted_with_line_numbers(file);
           break;
       default:
-          // For unsupported file types, just print the content
-          char buffer[4096];
-          size_t bytes_read;
-          while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-              fwrite(buffer, 1, bytes_read, stdout);
+          // For unsupported file types, just print the content with line numbers
+          char line[4096];
+          int line_number = 1;
+          
+          while (fgets(line, sizeof(line), file) != NULL) {
+              printf("%5d\t%s", line_number++, line);
+              
+              // If the line doesn't end with a newline, add one
+              if (strlen(line) > 0 && line[strlen(line) - 1] != '\n') {
+                  printf("\n");
+              }
           }
           break;
   }
 }
 
 /**
-* Display file contents with optional syntax highlighting
+* Display file contents with line numbers and optional syntax highlighting
 */
 int lsh_cat(char **args) {
   if (args[1] == NULL) {
@@ -852,13 +1435,13 @@ int lsh_cat(char **args) {
       return 1;
   }
   
-  // Check for flags (e.g., -n for line numbers, -h for highlighting)
-  int use_highlighting = 1; // Default to using highlighting
+  // Check for flags (e.g., -s for syntax highlighting)
+  int use_highlighting = 0; // Default to no highlighting
   int start_index = 1;
   
   if (args[1][0] == '-') {
-      if (strcmp(args[1], "-p") == 0 || strcmp(args[1], "--plain") == 0) {
-          use_highlighting = 0;
+      if (strcmp(args[1], "-s") == 0 || strcmp(args[1], "--syntax") == 0) {
+          use_highlighting = 1;
           start_index = 2;
       }
       
@@ -876,8 +1459,8 @@ int lsh_cat(char **args) {
       // Print filename and blank line before content
       printf("\n--- %s ---\n\n", args[i]);
       
-      // Open the file in binary mode to avoid automatic CRLF conversion
-      FILE *file = fopen(args[i], "rb");
+      // Open the file
+      FILE *file = fopen(args[i], "r");
       
       if (file == NULL) {
           fprintf(stderr, "lsh: cannot open '%s': ", args[i]);
@@ -887,30 +1470,28 @@ int lsh_cat(char **args) {
           continue;
       }
       
-      // Determine file type and print with appropriate highlighting
       if (use_highlighting) {
+          // Determine file type for highlighting
           FileType type = get_file_type(args[i]);
           
-          // Reopen as text file for line-by-line processing when highlighting
-          fclose(file);
-          file = fopen(args[i], "r");
-          
-          if (file == NULL) {
-              fprintf(stderr, "lsh: cannot reopen '%s' as text: ", args[i]);
-              perror("");
-              success = 0;
-              i++;
-              continue;
-          }
-          
+          // Use the highlighting function that includes line numbers
           print_file_with_highlighting(file, type);
       } else {
-          // Just print the file without highlighting
-          char buffer[4096];
-          size_t bytes_read;
+          // Read and print file with line numbers only (no highlighting)
+          char line[4096];
+          int line_number = 1;
           
-          while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-              fwrite(buffer, 1, bytes_read, stdout);
+          while (fgets(line, sizeof(line), file) != NULL) {
+              // Print line number and tab
+              printf("%5d\t", line_number++);
+              
+              // Print the line
+              printf("%s", line);
+              
+              // If the line doesn't end with a newline, add one
+              if (strlen(line) > 0 && line[strlen(line) - 1] != '\n') {
+                  printf("\n");
+              }
           }
       }
       
