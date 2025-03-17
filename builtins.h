@@ -34,6 +34,7 @@ int lsh_history(char **args);
 int lsh_copy(char **args);
 int lsh_paste(char **args);
 int lsh_move(char **args);
+int lsh_ps(char **args);
 
 // Command with structured output
 TableData* lsh_dir_structured(char **args);

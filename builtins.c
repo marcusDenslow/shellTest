@@ -16,6 +16,8 @@
 #include <wincrypt.h>
 #include "structured_data.h"
 #include "filters.h"
+#include <Psapi.h>
+#include <tlhelp32.h>
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
 
@@ -76,6 +78,7 @@ char *builtin_str[] = {
 "paste",
 "move",
 "mv",
+"ps",
 };
 
 // Array of built-in command function pointers
@@ -100,6 +103,7 @@ int (*builtin_func[]) (char **) = {
 &lsh_paste,
 &lsh_move,
 &lsh_move,
+&lsh_ps,
 };
 
 // Return the number of built-in commands
@@ -2366,6 +2370,229 @@ TableData* (*filter_func[]) (TableData*, char**) = {
 };
 
 int filter_count = sizeof(filter_str) / sizeof(char*);
+
+
+int lsh_ps(char **args) {
+    HANDLE hSnapshot;
+    PROCESSENTRY32 pe32;
+    int processCount = 0;
+    
+    // Define column widths for better alignment
+    const int pidColWidth = 10;
+    const int nameColWidth = 30;
+    const int memColWidth = 15;
+    const int threadColWidth = 10;
+    
+    // Get handle to console for output
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    
+    // Get console screen size
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    int consoleHeight = 0;
+    if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+        consoleHeight = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    } else {
+        // Fallback if we can't get console info
+        consoleHeight = 25; // Common default height
+    }
+    
+    // Structure to hold process info
+    typedef struct {
+        DWORD processId;
+        char processName[MAX_PATH];
+        SIZE_T memoryUsage;
+        DWORD threadCount;
+        BOOL isUserProcess;
+    } ProcessInfo;
+    
+    // Allocate initial space for 100 processes
+    int processCapacity = 100;
+    ProcessInfo *processes = (ProcessInfo*)malloc(processCapacity * sizeof(ProcessInfo));
+    if (!processes) {
+        fprintf(stderr, "lsh: allocation error in ps command\n");
+        return 1;
+    }
+    
+    // Create a snapshot of all processes
+    hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "lsh: failed to create process snapshot\n");
+        free(processes);
+        return 1;
+    }
+    
+    // Set the size of the structure before using it
+    pe32.dwSize = sizeof(PROCESSENTRY32);
+    
+    // Retrieve information about the first process
+    if (!Process32First(hSnapshot, &pe32)) {
+        fprintf(stderr, "lsh: failed to get process information\n");
+        CloseHandle(hSnapshot);
+        free(processes);
+        return 1;
+    }
+    
+    // Walk through the snapshot of processes
+    do {
+        // Check if this is likely a user process by using heuristics
+        BOOL isUserProcess = FALSE;
+        
+        // Common system process executables to exclude
+        static const char *systemProcesses[] = {
+            "svchost.exe", "csrss.exe", "smss.exe", "wininit.exe", 
+            "services.exe", "lsass.exe", "winlogon.exe", "explorer.exe",
+            "spoolsv.exe", "dwm.exe", "taskhost.exe", "taskhostw.exe",
+            "conhost.exe", "system", "registry", "dllhost.exe",
+            "msdtc.exe", "sqlservr.exe", "w3wp.exe", "inetinfo.exe"
+        };
+        
+        BOOL isSystemProcess = FALSE;
+        for (int i = 0; i < sizeof(systemProcesses) / sizeof(systemProcesses[0]); i++) {
+            if (_stricmp(pe32.szExeFile, systemProcesses[i]) == 0) {
+                isSystemProcess = TRUE;
+                break;
+            }
+        }
+        
+        // Get additional process info
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe32.th32ProcessID);
+        SIZE_T memoryUsage = 0;
+        
+        if (hProcess != NULL) {
+            PROCESS_MEMORY_COUNTERS pmc;
+            if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc))) {
+                memoryUsage = pmc.WorkingSetSize;
+            }
+            CloseHandle(hProcess);
+        }
+        
+        // Include if not a system process or if it has a significant memory footprint
+        if (!isSystemProcess || memoryUsage > 20 * 1024 * 1024) {  // > 20MB is likely a user app
+            // Make space for more processes if needed
+            if (processCount >= processCapacity) {
+                processCapacity *= 2;
+                ProcessInfo *newBuffer = (ProcessInfo*)realloc(processes, processCapacity * sizeof(ProcessInfo));
+                if (!newBuffer) {
+                    fprintf(stderr, "lsh: allocation error in ps command\n");
+                    free(processes);
+                    CloseHandle(hSnapshot);
+                    return 1;
+                }
+                processes = newBuffer;
+            }
+            
+            // Store process information
+            processes[processCount].processId = pe32.th32ProcessID;
+            strncpy(processes[processCount].processName, pe32.szExeFile, MAX_PATH);
+            processes[processCount].memoryUsage = memoryUsage;
+            processes[processCount].threadCount = pe32.cntThreads;
+            processes[processCount].isUserProcess = !isSystemProcess;
+            
+            processCount++;
+        }
+        
+    } while (Process32Next(hSnapshot, &pe32));
+    
+    // Clean up the snapshot handle
+    CloseHandle(hSnapshot);
+    
+    // Calculate listing height
+    // Title line + blank line = 2
+    // Top header (3 lines)
+    // One line per process
+    // Bottom border line
+    // Total = 2 + 3 + processCount + 1 = 6 + processCount
+    int listingHeight = 6 + processCount;
+    
+    // Determine if the listing will be taller than the console height
+    int needBottomHeader = (listingHeight > consoleHeight);
+    
+    // Print process info header
+    printf("\nRunning Processes (%d user processes)\n\n", processCount);
+    
+    // Print table header
+    printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+        pidColWidth, "----------", 
+        nameColWidth, "------------------------------", 
+        memColWidth, "---------------", 
+        threadColWidth, "----------");
+        
+    printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+        pidColWidth-2, "PID", 
+        nameColWidth-2, "Process Name", 
+        memColWidth-2, "Memory Usage", 
+        threadColWidth-2, "Threads");
+        
+    printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+        pidColWidth, "----------", 
+        nameColWidth, "------------------------------", 
+        memColWidth, "---------------", 
+        threadColWidth, "----------");
+    
+    // Print all process information
+    for (int i = 0; i < processCount; i++) {
+        // Format memory usage (KB, MB, GB)
+        char memoryString[32];
+        if (processes[i].memoryUsage < 1024) {
+            sprintf(memoryString, "%llu B", (unsigned long long)processes[i].memoryUsage);
+        } else if (processes[i].memoryUsage < 1024 * 1024) {
+            sprintf(memoryString, "%.1f KB", processes[i].memoryUsage / 1024.0);
+        } else if (processes[i].memoryUsage < 1024 * 1024 * 1024) {
+            sprintf(memoryString, "%.1f MB", processes[i].memoryUsage / (1024.0 * 1024.0));
+        } else {
+            sprintf(memoryString, "%.1f GB", processes[i].memoryUsage / (1024.0 * 1024.0 * 1024.0));
+        }
+        
+        // Truncate process name if too long
+        char truncName[nameColWidth];
+        strncpy(truncName, processes[i].processName, nameColWidth-3);
+        truncName[nameColWidth-3] = '\0';
+        if (strlen(processes[i].processName) > nameColWidth-3) {
+            strcat(truncName, "...");
+        }
+        
+        // Highlight user processes with different color
+        if (processes[i].isUserProcess) {
+            set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        }
+        
+        printf("| %-*lu | %-*s | %-*s | %-*lu |\n", 
+            pidColWidth-2, processes[i].processId, 
+            nameColWidth-2, truncName, 
+            memColWidth-2, memoryString, 
+            threadColWidth-2, processes[i].threadCount);
+            
+        // Reset color
+        reset_color();
+    }
+    
+    // Print bottom border of table
+    printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+        pidColWidth, "----------", 
+        nameColWidth, "------------------------------", 
+        memColWidth, "---------------", 
+        threadColWidth, "----------");
+        
+    // Print headers again at the bottom if the listing is tall
+    if (needBottomHeader) {
+        printf("| %-*s | %-*s | %-*s | %-*s |\n", 
+            pidColWidth-2, "PID", 
+            nameColWidth-2, "Process Name", 
+            memColWidth-2, "Memory Usage", 
+            threadColWidth-2, "Threads");
+            
+        printf("+%.*s+%.*s+%.*s+%.*s+\n", 
+            pidColWidth, "----------", 
+            nameColWidth, "------------------------------", 
+            memColWidth, "---------------", 
+            threadColWidth, "----------");
+    }
+    
+    // Clean up
+    free(processes);
+    
+    return 1;
+}
 
 
 // Exit the shell
