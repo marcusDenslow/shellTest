@@ -7,6 +7,7 @@
 #define SHELL_H
 
 #include "common.h"
+#include "structured_data.h"  // Add this include
 
 /**
  * Execute a command
@@ -15,6 +16,14 @@
  * @return 1 to continue the shell, 0 to exit
  */
 int lsh_execute(char **args);
+
+/**
+ * Execute a pipeline of commands
+ * 
+ * @param commands Null-terminated array of command arrays
+ * @return 1 to continue the shell, 0 to exit
+ */
+int lsh_execute_piped(char ***commands);
 
 /**
  * Launch an external program
@@ -28,5 +37,10 @@ int lsh_launch(char **args);
  * Main shell loop
  */
 void lsh_loop(void);
+
+/**
+ * Free memory for a command array from lsh_split_commands
+ */
+void free_commands(char ***commands);
 
 #endif // SHELL_H

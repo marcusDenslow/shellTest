@@ -518,3 +518,73 @@ char **lsh_split_line(char *line) {
     tokens[position] = NULL;
     return tokens;
 }
+
+// Add after the existing line_reader.c functions
+
+/**
+ * Split a line into commands separated by pipes
+ */
+char ***lsh_split_commands(char *line) {
+    int bufsize = 8;  // Initial number of commands
+    int cmd_count = 0;
+    char ***commands = malloc(bufsize * sizeof(char**));
+    
+    if (!commands) {
+        fprintf(stderr, "lsh: allocation error\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    // Make a copy of the line since strtok modifies the string
+    char *line_copy = _strdup(line);
+    if (!line_copy) {
+        fprintf(stderr, "lsh: allocation error\n");
+        free(commands);
+        exit(EXIT_FAILURE);
+    }
+    
+    // Split by pipe symbol
+    char *saveptr;
+    char *cmd_str = strtok_s(line_copy, "|", &saveptr);
+    
+    while (cmd_str != NULL) {
+        // Trim leading whitespace
+        while (isspace(*cmd_str)) cmd_str++;
+        
+        // Make a copy of the cmd_str for splitting
+        char *cmd_copy = _strdup(cmd_str);
+        if (!cmd_copy) {
+            fprintf(stderr, "lsh: allocation error\n");
+            free(line_copy);
+            // Free previously allocated commands
+            for (int i = 0; i < cmd_count; i++) {
+                free(commands[i]);
+            }
+            free(commands);
+            exit(EXIT_FAILURE);
+        }
+        
+        // Split the command into tokens
+        commands[cmd_count] = lsh_split_line(cmd_copy);
+        cmd_count++;
+        
+        // Resize if needed
+        if (cmd_count >= bufsize) {
+            bufsize += 8;
+            commands = realloc(commands, bufsize * sizeof(char**));
+            if (!commands) {
+                fprintf(stderr, "lsh: allocation error\n");
+                free(line_copy);
+                exit(EXIT_FAILURE);
+            }
+        }
+        
+        // The copy of cmd_str is now owned by lsh_split_line
+        cmd_str = strtok_s(NULL, "|", &saveptr);
+    }
+    
+    // Add NULL terminator
+    commands[cmd_count] = NULL;
+    
+    free(line_copy);
+    return commands;
+}

@@ -14,6 +14,8 @@
 #include <ole2.h>
 #include <olectl.h>
 #include <wincrypt.h>
+#include "structured_data.h"
+#include "filters.h"
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
 
@@ -2248,6 +2250,123 @@ for (i = 0; i < lsh_num_builtins(); i++) {
 printf("Use the command for information on other programs.\n");
 return 1;
 }
+
+
+/**
+ * Create structured output for ls/dir command
+ */
+TableData* lsh_dir_structured(char **args) {
+    char cwd[1024];
+    WIN32_FIND_DATA findData;
+    HANDLE hFind;
+    
+    // Create table with appropriate headers
+    char *headers[] = {"Created", "Size", "Type", "Name"};
+    TableData *table = create_table(headers, 4);
+    if (!table) {
+        return NULL;
+    }
+    
+    // Get current directory
+    if (_getcwd(cwd, sizeof(cwd)) == NULL) {
+        fprintf(stderr, "lsh: failed to get current directory\n");
+        free_table(table);
+        return NULL;
+    }
+    
+    // Prepare search pattern for all files
+    char searchPath[1024];
+    strcpy(searchPath, cwd);
+    strcat(searchPath, "\\*");
+    
+    // First find to count files
+    hFind = FindFirstFile(searchPath, &findData);
+    
+    if (hFind == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "lsh: Failed to list directory contents\n");
+        free_table(table);
+        return NULL;
+    }
+    
+    // Process all files and store in array
+    do {
+        // Skip . and .. directories for cleaner output
+        if (strcmp(findData.cFileName, ".") != 0 && strcmp(findData.cFileName, "..") != 0) {
+            // Convert file creation time to system time
+            SYSTEMTIME fileTime;
+            FileTimeToSystemTime(&findData.ftCreationTime, &fileTime);
+            
+            // Format creation time as string
+            char timeString[32];
+            sprintf(timeString, "%04d-%02d-%02d %02d:%02d:%02d", 
+                    fileTime.wYear, fileTime.wMonth, fileTime.wDay,
+                    fileTime.wHour, fileTime.wMinute, fileTime.wSecond);
+            
+            // Check if it's a directory
+            BOOL isDirectory = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+            const char* fileType = isDirectory ? "Directory" : "File";
+            
+            // Format size (only for files)
+            char sizeString[32];
+            if (isDirectory) {
+                strcpy(sizeString, "-");
+            } else {
+                // Format size with appropriate units
+                if (findData.nFileSizeLow < 1024) {
+                    sprintf(sizeString, "%lu B", findData.nFileSizeLow);
+                } else if (findData.nFileSizeLow < 1024 * 1024) {
+                    sprintf(sizeString, "%.1f KB", findData.nFileSizeLow / 1024.0);
+                } else {
+                    sprintf(sizeString, "%.1f MB", findData.nFileSizeLow / (1024.0 * 1024.0));
+                }
+            }
+            
+            // Create row of data values
+            DataValue *row = (DataValue*)malloc(4 * sizeof(DataValue));
+            if (!row) {
+                fprintf(stderr, "lsh: allocation error in lsh_dir_structured\n");
+                free_table(table);
+                return NULL;
+            }
+            
+            // Time column
+            row[0].type = TYPE_STRING;
+            row[0].value.str_val = _strdup(timeString);
+            
+            // Size column
+            row[1].type = TYPE_STRING;
+            row[1].value.str_val = _strdup(sizeString);
+            
+            // Type column
+            row[2].type = TYPE_STRING;
+            row[2].value.str_val = _strdup(fileType);
+            
+            // Name column
+            row[3].type = TYPE_STRING;
+            row[3].value.str_val = _strdup(findData.cFileName);
+            
+            // Add to table
+            add_table_row(table, row);
+        }
+    } while (FindNextFile(hFind, &findData));
+    
+    // Close find handle
+    FindClose(hFind);
+    
+    return table;
+}
+
+// Add filter command strings and function array
+char *filter_str[] = {
+    "where"
+};
+
+TableData* (*filter_func[]) (TableData*, char**) = {
+    &lsh_where
+};
+
+int filter_count = sizeof(filter_str) / sizeof(char*);
+
 
 // Exit the shell
 int lsh_exit(char **args) {

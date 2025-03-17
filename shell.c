@@ -6,6 +6,8 @@
 #include "shell.h"
 #include "builtins.h"
 #include "line_reader.h"
+#include "structured_data.h"
+#include "filters.h"
 
 /**
  * Launch an external program
@@ -60,11 +62,95 @@ int lsh_execute(char **args) {
 }
 
 /**
+ * Execute a pipeline of commands
+ */
+int lsh_execute_piped(char ***commands) {
+    int i;
+    TableData *result = NULL;
+    
+    // Execute each command in the pipeline
+    for (i = 0; commands[i] != NULL; i++) {
+        char **args = commands[i];
+        
+        if (args[0] == NULL) {
+            continue;
+        }
+        
+        // First command in pipeline
+        if (i == 0) {
+            // Only 'ls' and 'dir' can produce structured data for now
+            if (strcmp(args[0], "ls") == 0 || strcmp(args[0], "dir") == 0) {
+                result = lsh_dir_structured(args);
+                if (!result) {
+                    fprintf(stderr, "lsh: error generating structured output for '%s'\n", args[0]);
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "lsh: command '%s' does not support piping\n", args[0]);
+                return 1;
+            }
+        } else {
+            // Handle piped commands (filters)
+            if (result == NULL) {
+                fprintf(stderr, "lsh: no data to pipe\n");
+                return 1;
+            }
+            
+            // Search for matching filter
+            int found = 0;
+            for (int j = 0; j < filter_count; j++) {
+                if (strcmp(args[0], filter_str[j]) == 0) {
+                    // Run the filter
+                    TableData *filtered = (*filter_func[j])(result, args + 1);
+                    
+                    // Clean up previous result
+                    free_table(result);
+                    
+                    // Use the filtered result for next stage or output
+                    result = filtered;
+                    found = 1;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                fprintf(stderr, "lsh: filter '%s' not supported\n", args[0]);
+                free_table(result);
+                result = NULL;
+                return 1;
+            }
+        }
+    }
+    
+    // Print the final result
+    if (result != NULL) {
+        print_table(result);
+        free_table(result);
+    }
+    
+    return 1;
+}
+
+/**
+ * Free memory for a command array from lsh_split_commands
+ */
+void free_commands(char ***commands) {
+    if (!commands) return;
+    
+    for (int i = 0; commands[i] != NULL; i++) {
+        // Note: We don't free the token strings since they're
+        // just pointers into the original command string
+        free(commands[i]);
+    }
+    free(commands);
+}
+
+/**
  * Main shell loop
  */
 void lsh_loop(void) {
     char *line;
-    char **args;
+    char ***commands;
     int status;
     char cwd[1024];
     char prompt_path[1024];
@@ -109,10 +195,27 @@ void lsh_loop(void) {
             lsh_add_to_history(line);
         }
         
-        args = lsh_split_line(line);
-        status = lsh_execute(args);
+        // Split and execute commands
+        commands = lsh_split_commands(line);
         
+        // Check if there are any pipes (more than one command)
+        int pipe_count = 0;
+        while (commands[pipe_count] != NULL) pipe_count++;
+        
+        if (pipe_count > 1) {
+            // Execute piped commands
+            status = lsh_execute_piped(commands);
+        } else if (pipe_count == 1) {
+            // Execute single command the normal way
+            status = lsh_execute(commands[0]);
+        } else {
+            // No commands (empty line)
+            status = 1;
+        }
+        
+        // Clean up
         free(line);
-        free(args);
+        free_commands(commands);
+        
     } while (status);
 }

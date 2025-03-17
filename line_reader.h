@@ -23,4 +23,12 @@ char *lsh_read_line(void);
  */
 char **lsh_split_line(char *line);
 
+/**
+ * Split a line into commands separated by pipes
+ * 
+ * @param line The line to split
+ * @return A NULL-terminated array of command token arrays
+ */
+char ***lsh_split_commands(char *line);
+
 #endif // LINE_READER_H

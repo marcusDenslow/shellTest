@@ -7,6 +7,7 @@
 #define BUILTINS_H
 
 #include "common.h"
+#include "structured_data.h"  // Add this include
 
 // Syntax highlighting definitions
 #define COLOR_DEFAULT 7   // FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE
@@ -34,6 +35,9 @@ int lsh_copy(char **args);
 int lsh_paste(char **args);
 int lsh_move(char **args);
 
+// Command with structured output
+TableData* lsh_dir_structured(char **args);
+
 // Add command to history
 void lsh_add_to_history(const char *command);
 
@@ -43,5 +47,10 @@ int lsh_num_builtins(void);
 // Expose the builtin command strings and function pointers
 extern char *builtin_str[];
 extern int (*builtin_func[]) (char **);
+
+// Add filter commands
+extern char *filter_str[];
+extern TableData* (*filter_func[]) (TableData*, char**);
+extern int filter_count;
 
 #endif // BUILTINS_H
