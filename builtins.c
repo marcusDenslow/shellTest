@@ -2710,9 +2710,6 @@ TableData* lsh_dir_structured(char **args) {
     return table;
 }
 
-
-
-
 /**
  * Get the latest commit message from GitHub
  */
@@ -2907,85 +2904,192 @@ int lsh_news(char **args) {
             }
         }
 
-    set_color(COLOR_KEYWORD);
-// Normal top border (unchanged)
-printf("\u250C\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n");
-// Move right border one character left by putting the vertical bar BEFORE the last space
-printf("\u2502         LATEST REPOSITORY NEWS        \u2502 \n");
-// Normal bottom border (unchanged)
-printf("\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\n");
-reset_color();
+    // Define a constant box width - make it wide enough for messages
+    const int BOX_WIDTH = 76;
+    
+    // Save all the news content in a buffer so we can format it properly
+    char news_buffer[4096] = "";
+    char line_buffer[256];
+    
+    // Format the commit header information into our buffer
+    if (sha) {
+        sprintf(line_buffer, "Commit: %.8s\n", sha);
+        strcat(news_buffer, line_buffer);
+    }
+    
+    if (author) {
+        sprintf(line_buffer, "Author: %s\n", author);
+        strcat(news_buffer, line_buffer);
+    }
+    
+    if (date) {
+        // Format date nicely if possible (GitHub date format: 2023-03-17T12:34:56Z)
+        char year[5], month[3], day[3], time[9];
+        if (sscanf(date, "%4s-%2s-%2sT%8s", year, month, day, time) == 4) {
+            sprintf(line_buffer, "Date:   %s-%s-%s %s\n", year, month, day, time);
+        } else {
+            sprintf(line_buffer, "Date:   %s\n", date);
+        }
+        strcat(news_buffer, line_buffer);
+    }
+    
+    // Add a separator line before the commit message
+    strcat(news_buffer, "\n");
+    
+    // Add commit message with proper word wrapping
+    if (message) {
+        strcat(news_buffer, "Commit Message:\n");
+        
+        // Word wrap the message at BOX_WIDTH-6 chars (allowing for borders and padding)
+        const int WRAP_WIDTH = BOX_WIDTH - 6;
+        int line_length = 0;
+        char* word_start = message;
+        char line[256]; // Fixed size buffer, large enough for our needs
+        line[0] = '\0'; // Initialize as empty string
+        
+        for (char* p = message; *p; p++) {
+            if (*p == ' ' || *p == '\n') {
+                // Found a word boundary
+                int word_len = p - word_start;
+                
+                // Check if adding this word would exceed our wrap width
+                if (line_length + word_len > WRAP_WIDTH && line_length > 0) {
+                    // Add the current line to our buffer and start a new line
+                    strcat(news_buffer, line);
+                    strcat(news_buffer, "\n");
+                    line[0] = '\0';
+                    line_length = 0;
+                }
+                
+                // Add the word to the current line
+                strncat(line, word_start, word_len);
+                if (*p == ' ') {
+                    strcat(line, " ");
+                    line_length += word_len + 1;
+                } else { // newline
+                    strcat(news_buffer, line);
+                    strcat(news_buffer, "\n");
+                    line[0] = '\0';
+                    line_length = 0;
+                }
+                
+                // Move to the next word
+                word_start = p + 1;
+            }
+        }
+        
+        // Add any remaining text in the line
+        if (line_length > 0) {
+            strcat(news_buffer, line);
+            strcat(news_buffer, "\n");
+        }
+        
+        // Add any remaining word that might not have a space or newline after it
+        if (word_start && *word_start) {
+            strcat(news_buffer, word_start);
+            strcat(news_buffer, "\n");
+        }
+    } else {
+        strcat(news_buffer, "No commit message found.\n");
+    }
+    
+    // Get console width to center the box
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    int consoleWidth = 80; // Default width if we can't get actual console info
+    
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+        consoleWidth = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    }
+    
+    // Calculate left padding to center the box
+    int leftPadding = (consoleWidth - BOX_WIDTH - 2) / 2; // -2 accounts for the border characters
+    if (leftPadding < 0) leftPadding = 0; // Ensure we don't have negative padding
+    
+    // Now draw the box with all the content inside
+    
+    // Calculate how many lines of content we have
+    int line_count = 0;
+    for (char *p = news_buffer; *p; p++) {
+        if (*p == '\n') line_count++;
+    }
+    
+    // Use bright green for the borders and header
+    set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    
+    // Top border with centering
+    printf("%*s", leftPadding, ""); // Add left padding
+    printf("\u250C"); // Top-left corner
+    for (int i = 0; i < BOX_WIDTH; i++) {
+        printf("\u2500"); // Horizontal line
+    }
+    printf("\u2510\n"); // Top-right corner
+    
+    // Title row - centered within the box
+    printf("%*s", leftPadding, ""); // Add left padding
+    printf("\u2502"); // Left border
+    const char *title = "LATEST REPOSITORY NEWS";
+    int title_padding = (BOX_WIDTH - strlen(title)) / 2;
+    printf("%*s%s%*s", title_padding, "", title, BOX_WIDTH - title_padding - strlen(title), "");
+    printf("\u2502\n"); // Right border
+    
+    // Separator line
+    printf("%*s", leftPadding, ""); // Add left padding
+    printf("\u251C"); // Left T-junction
+    for (int i = 0; i < BOX_WIDTH; i++) {
+        printf("\u2500"); // Horizontal line
+    }
+    printf("\u2524\n"); // Right T-junction
+    
+    // Content lines - use white (bright) text for content
+    char *line_start = news_buffer;
+    char *line_end;
+    
+    while ((line_end = strchr(line_start, '\n')) != NULL) {
+        *line_end = '\0'; // Temporarily terminate this line
+        
+        // Add left padding for centering
+        printf("%*s", leftPadding, "");
+        
+        // Print left border in green
+        set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        printf("\u2502");
+        
+        // Print content in white with precise padding
+        set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+        
+        // Create a padded line with exact width
+        char paddedLine[BOX_WIDTH + 3]; // +3 for safety
+        snprintf(paddedLine, sizeof(paddedLine), " %-*s ", BOX_WIDTH - 1, line_start);
+        
+        // Print exactly BOX_WIDTH characters
+        printf("%.*s", BOX_WIDTH, paddedLine);
+        
+        // Print right border in green
+        set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        printf("\u2502\n");
+        
+        *line_end = '\n'; // Restore the newline
+        line_start = line_end + 1; // Move to the start of the next line
+    }
+    
+    // Bottom border in green
+    printf("%*s", leftPadding, ""); // Add left padding
+    set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    printf("\u2514"); // Bottom-left corner
+    for (int i = 0; i < BOX_WIDTH; i++) {
+        printf("\u2500"); // Horizontal line
+    }
+    printf("\u2518\n\n"); // Bottom-right corner with extra newline for spacing
+    
+    reset_color();
 
   
 
             
-        if (sha) {
-            printf("Commit: ");
-            set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-            printf("%.8s", sha);  // Just the first 8 characters of the SHA
-            reset_color();
-            printf("\n");
-        }
-        
-        if (author) {
-            printf("Author: %s\n", author);
-        }
-        
-        if (date) {
-            // Format date nicely if possible (GitHub date format: 2023-03-17T12:34:56Z)
-            char year[5], month[3], day[3], time[9];
-            if (sscanf(date, "%4s-%2s-%2sT%8s", year, month, day, time) == 4) {
-                printf("Date:   %s-%s-%s %s\n", year, month, day, time);
-            } else {
-                printf("Date:   %s\n", date);
-            }
-        }
-        
-        printf("\n");
-        
+        // Display the formatted news in a box
+        // This section is now handled by the box-drawing code above
         if (message) {
-            set_color(FOREGROUND_RED | FOREGROUND_INTENSITY);
-            printf("Commit Message:\n");
-            reset_color();
-            
-            // Word wrap the message at ~70 chars for better display
-            int line_length = 0;
-            char* word_start = message;
-            
-            for (char* p = message; *p; p++) {
-                if (*p == ' ' || *p == '\n') {
-                    // Found a word boundary, print the word
-                    int word_len = p - word_start;
-                    
-                    // Check if we need to wrap
-                    if (line_length + word_len > 70 && line_length > 0) {
-                        printf("\n");
-                        line_length = 0;
-                    }
-                    
-                    // Print the word
-                    printf("%.*s%c", word_len, word_start, *p);
-                    line_length += word_len + 1;
-                    
-                    // If this was a newline, reset line_length
-                    if (*p == '\n') {
-                        line_length = 0;
-                    }
-                    
-                    // Move to the next word
-                    word_start = p + 1;
-                }
-            }
-            
-            // Print any remaining text
-            if (word_start && *word_start) {
-                printf("%s", word_start);
-            }
-            
-            printf("\n\n");
             free(message);
-        } else {
-            printf("No commit message found.\n\n");
         }
     } else {
         fprintf(stderr, "Error: Empty response from GitHub API\n");
