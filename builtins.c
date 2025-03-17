@@ -2713,7 +2713,6 @@ TableData* lsh_dir_structured(char **args) {
 
 
 
-
 /**
  * Get the latest commit message from GitHub
  */
@@ -2865,6 +2864,44 @@ int lsh_news(char **args) {
                     if (message) {
                         strncpy(message, message_pos, message_len);
                         message[message_len] = '\0';
+                        
+                        // Unescape the string with proper handling of escape sequences
+                        char *src = message;
+                        char *dst = message;
+                        int escaped = 0;
+                        
+                        while (*src) {
+                            if (escaped) {
+                                // Handle special escape sequences properly
+                                switch (*src) {
+                                    case 'n':  // Newline
+                                        *dst++ = '\n';
+                                        break;
+                                    case 't':  // Tab
+                                        *dst++ = '\t';
+                                        break;
+                                    case 'r':  // Carriage return
+                                        *dst++ = '\r';
+                                        break;
+                                    case '\\': // Backslash
+                                        *dst++ = '\\';
+                                        break;
+                                    case '"':  // Double quote
+                                        *dst++ = '"';
+                                        break;
+                                    default:   // Copy as-is for other escape sequences
+                                        *dst++ = *src;
+                                        break;
+                                }
+                                escaped = 0;
+                            } else if (*src == '\\') {
+                                escaped = 1;
+                            } else {
+                                *dst++ = *src;
+                            }
+                            src++;
+                        }
+                        *dst = '\0';
                     }
                 }
             }
@@ -2957,6 +2994,7 @@ reset_color();
     
     return 1;
 }
+
 
 
 /**
