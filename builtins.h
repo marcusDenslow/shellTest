@@ -22,6 +22,20 @@
 void set_color(int color);
 void reset_color();
 
+// History command implementation
+#define HISTORY_SIZE 10
+
+// New struct to hold history entries with timestamps
+typedef struct {
+  char *command;
+  SYSTEMTIME timestamp;
+} HistoryEntry;
+
+// History variables - made extern to be accessible from line_reader.c
+extern HistoryEntry command_history[HISTORY_SIZE];
+extern int history_count;
+extern int history_index;
+
 // Built-in command declarations
 int lsh_cd(char **args);
 int lsh_help(char **args);

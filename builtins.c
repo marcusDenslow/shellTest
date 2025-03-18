@@ -30,11 +30,7 @@
 // History command implementation
 #define HISTORY_SIZE 10
 
-// New struct to hold history entries with timestamps
-typedef struct {
-  char *command;
-  SYSTEMTIME timestamp;
-} HistoryEntry;
+
 
 // Structure to store file info for directory listing
 typedef struct {
@@ -58,9 +54,9 @@ int compare_dir_entries(const void* a, const void* b) {
     return _stricmp(fa->fileName, fb->fileName);
 }
 
-static HistoryEntry command_history[HISTORY_SIZE] = {0};
-static int history_count = 0;  // Total number of commands entered
-static int history_index = 0;  // Current index in the circular buffer
+HistoryEntry command_history[HISTORY_SIZE] = {0};
+int history_count = 0;  // Total number of commands entered
+int history_index = 0;  // Current index in the circular buffer
 
 // Array of built-in command names
 char *builtin_str[] = {
