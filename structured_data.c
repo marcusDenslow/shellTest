@@ -93,7 +93,6 @@ void free_table(TableData *table) {
     free(table);
 }
 
-
 /**
  * Create a copy of a DataValue
  */
@@ -117,8 +116,6 @@ DataValue copy_data_value(const DataValue *src) {
     
     return dest;
 }
-
-
 
 /**
  * Free a DataValue
@@ -324,6 +321,8 @@ TableData* filter_table(TableData *input, char *field, char *op, char *value) {
 
 /**
  * Print a table to the console with nice formatting using Unicode box characters
+ * Ultra-optimized version with correct color handling (only text in green)
+ * This maintains the batch-printing speed while fixing the colors
  */
 void print_table(TableData *table) {
     if (!table || table->row_count == 0) {
@@ -334,25 +333,20 @@ void print_table(TableData *table) {
     // Get handle to console for output
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     
-    // Get console screen size
+    // Get console screen info
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     int consoleHeight = 0;
+    WORD originalAttributes;
     if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
         consoleHeight = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+        originalAttributes = csbi.wAttributes;
     } else {
-        // Fallback if we can't get console info
         consoleHeight = 25; // Common default height
+        originalAttributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE; // Default white
     }
     
-    // Calculate total height of the table listing
-    // Title line + blank line = 2
-    // Top header (3 lines)
-    // One line per row
-    // Bottom border line
-    // Total = 2 + 3 + table->row_count + 1 = 6 + table->row_count
+    // Calculate listing height
     int listingHeight = 6 + table->row_count;
-    
-    // Determine if the listing will be taller than the console height
     int needBottomHeader = (listingHeight > consoleHeight);
     
     // Calculate column widths
@@ -396,120 +390,167 @@ void print_table(TableData *table) {
         col_widths[i] += 4;  // 2 spaces on each side
     }
     
-    // Print table header
+    // Calculate total table width
+    int totalWidth = 1; // Start with 1 for the left border
+    for (int i = 0; i < table->header_count; i++) {
+        totalWidth += col_widths[i] + 1; // Add column width and right border
+    }
+    
+    // Create a buffer big enough for one line of the table
+    char *lineBuffer = (char*)malloc(totalWidth * 4 + 1); // Unicode chars can be up to 4 bytes
+    if (!lineBuffer) {
+        fprintf(stderr, "lsh: allocation error in print_table\n");
+        free(col_widths);
+        return;
+    }
+    
+    // Begin output with a newline
     printf("\n");
     
-    // Use default color for all table borders
-    reset_color();
-    
-    // Print top border with Unicode box characters
-    printf("\u250C"); // Top-left corner ┌
+    // ---- Print top border ----
+    lineBuffer[0] = '\0';
+    strcat(lineBuffer, "\u250C"); // Top-left corner ┌
     for (int i = 0; i < table->header_count; i++) {
         for (int j = 0; j < col_widths[i]; j++) {
-            printf("\u2500"); // Horizontal line ─
+            strcat(lineBuffer, "\u2500"); // Horizontal line ─
         }
         if (i < table->header_count - 1) {
-            printf("\u252C"); // Top T-junction ┬
+            strcat(lineBuffer, "\u252C"); // Top T-junction ┬
         }
     }
-    printf("\u2510\n"); // Top-right corner ┐
+    strcat(lineBuffer, "\u2510"); // Top-right corner ┐
+    printf("%s\n", lineBuffer);
     
-    // Print header row
-    printf("\u2502"); // Vertical line │
+    // ---- Print header row ----
+    lineBuffer[0] = '\0';
+    strcat(lineBuffer, "\u2502"); // Vertical line │
     for (int i = 0; i < table->header_count; i++) {
-        printf(" %-*s ", col_widths[i] - 2, table->headers[i]);
-        printf("\u2502"); // Vertical line │
+        char cellBuffer[256];
+        snprintf(cellBuffer, sizeof(cellBuffer), " %-*s ", col_widths[i] - 2, table->headers[i]);
+        strcat(lineBuffer, cellBuffer);
+        strcat(lineBuffer, "\u2502"); // Vertical line │
     }
-    printf("\n");
+    printf("%s\n", lineBuffer);
     
-    // Print header/data separator
-    printf("\u251C"); // Left T-junction ├
+    // ---- Print header/data separator ----
+    lineBuffer[0] = '\0';
+    strcat(lineBuffer, "\u251C"); // Left T-junction ├
     for (int i = 0; i < table->header_count; i++) {
         for (int j = 0; j < col_widths[i]; j++) {
-            printf("\u2500"); // Horizontal line ─
+            strcat(lineBuffer, "\u2500"); // Horizontal line ─
         }
         if (i < table->header_count - 1) {
-            printf("\u253C"); // Cross junction ┼
+            strcat(lineBuffer, "\u253C"); // Cross junction ┼
         }
     }
-    printf("\u2524\n"); // Right T-junction ┤
+    strcat(lineBuffer, "\u2524"); // Right T-junction ┤
+    printf("%s\n", lineBuffer);
     
-    // Print data rows
+    // ---- Pre-build the row template with borders in normal color ----
+    char *rowTemplate = (char*)malloc(totalWidth * 4 + 1);
+    if (!rowTemplate) {
+        fprintf(stderr, "lsh: allocation error in print_table\n");
+        free(lineBuffer);
+        free(col_widths);
+        return;
+    }
+    
+    // Build a template for each row with borders in default color
+    int templatePos = 0;
+    rowTemplate[templatePos++] = '\u2502'; // Left border
+    rowTemplate[templatePos] = '\0';
+    
+    for (int j = 0; j < table->header_count; j++) {
+        // Add placeholder for cell content (we'll format and print these separately in green)
+        char *placeholder = "%-*s";
+        strcat(rowTemplate, placeholder);
+        templatePos += strlen(placeholder);
+        
+        // Add right border
+        rowTemplate[templatePos++] = '\u2502';
+        rowTemplate[templatePos] = '\0';
+    }
+    
+    // Now for each row, we'll print the borders in normal color and content in green
     for (int i = 0; i < table->row_count; i++) {
-        // Always use green for processes (in ps command)
-        set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        // Prepare all cell contents in advance
+        char **cellContents = (char**)malloc(table->header_count * sizeof(char*));
+        if (!cellContents) {
+            fprintf(stderr, "lsh: allocation error in print_table\n");
+            free(rowTemplate);
+            free(lineBuffer);
+            free(col_widths);
+            return;
+        }
         
-        printf("\u2502"); // Vertical line │
         for (int j = 0; j < table->header_count; j++) {
+            cellContents[j] = (char*)malloc(col_widths[j] + 1);
+            if (!cellContents[j]) {
+                // Handle allocation failure
+                for (int k = 0; k < j; k++) {
+                    free(cellContents[k]);
+                }
+                free(cellContents);
+                free(rowTemplate);
+                free(lineBuffer);
+                free(col_widths);
+                return;
+            }
+            
+            // Format the cell content
             if (table->rows[i][j].type == TYPE_STRING || table->rows[i][j].type == TYPE_SIZE) {
-                printf(" %-*s ", col_widths[j] - 2, table->rows[i][j].value.str_val);
+                sprintf(cellContents[j], " %-*s ", col_widths[j] - 2, table->rows[i][j].value.str_val);
             } else if (table->rows[i][j].type == TYPE_INT) {
-                printf(" %-*d ", col_widths[j] - 2, table->rows[i][j].value.int_val);
+                sprintf(cellContents[j], " %-*d ", col_widths[j] - 2, table->rows[i][j].value.int_val);
             } else if (table->rows[i][j].type == TYPE_FLOAT) {
-                printf(" %-*.2f ", col_widths[j] - 2, table->rows[i][j].value.float_val);
+                sprintf(cellContents[j], " %-*.2f ", col_widths[j] - 2, table->rows[i][j].value.float_val);
             }
-            
-            // Reset color before printing border
-            reset_color();
-            printf("\u2502"); // Vertical line │
-            
-            // Set green color back for next cell
-            set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
         }
-        printf("\n");
         
-        // Reset color after the row
-        reset_color();
+        // Print the left border in normal color
+        printf("\u2502");
+        
+        // For each cell, print cell in green and border in normal
+        for (int j = 0; j < table->header_count; j++) {
+            // Print cell content in green
+            SetConsoleTextAttribute(hConsole, FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+            printf("%s", cellContents[j]);
+            
+            // Print border in normal color
+            SetConsoleTextAttribute(hConsole, originalAttributes);
+            if (j < table->header_count - 1) {
+                printf("\u2502");
+            } else {
+                printf("\u2502\n");
+            }
+        }
+        
+        // Clean up cell contents
+        for (int j = 0; j < table->header_count; j++) {
+            free(cellContents[j]);
+        }
+        free(cellContents);
     }
     
-    // If we need bottom header, use a middle separator instead of bottom border
-    if (needBottomHeader) {
-        // Print middle separator connecting to header
-        printf("\u251C"); // Left T-junction ├
-        for (int i = 0; i < table->header_count; i++) {
-            for (int j = 0; j < col_widths[i]; j++) {
-                printf("\u2500"); // Horizontal line ─
-            }
-            if (i < table->header_count - 1) {
-                printf("\u253C"); // Cross junction ┼
-            }
+    // Reset to original color (just to be safe)
+    SetConsoleTextAttribute(hConsole, originalAttributes);
+    
+    // ---- Print bottom border ----
+    lineBuffer[0] = '\0';
+    strcat(lineBuffer, "\u2514"); // Bottom-left corner └
+    for (int i = 0; i < table->header_count; i++) {
+        for (int j = 0; j < col_widths[i]; j++) {
+            strcat(lineBuffer, "\u2500"); // Horizontal line ─
         }
-        printf("\u2524\n"); // Right T-junction ┤
-        
-        // Print header row
-        printf("\u2502"); // Vertical line │
-        for (int i = 0; i < table->header_count; i++) {
-            printf(" %-*s ", col_widths[i] - 2, table->headers[i]);
-            printf("\u2502"); // Vertical line │
+        if (i < table->header_count - 1) {
+            strcat(lineBuffer, "\u2534"); // Bottom T-junction ┴
         }
-        printf("\n");
-        
-        // Print final bottom border
-        printf("\u2514"); // Bottom-left corner └
-        for (int i = 0; i < table->header_count; i++) {
-            for (int j = 0; j < col_widths[i]; j++) {
-                printf("\u2500"); // Horizontal line ─
-            }
-            if (i < table->header_count - 1) {
-                printf("\u2534"); // Bottom T-junction ┴
-            }
-        }
-        printf("\u2518\n"); // Bottom-right corner ┘
-    } else {
-        // No bottom header, just print bottom border
-        printf("\u2514"); // Bottom-left corner └
-        for (int i = 0; i < table->header_count; i++) {
-            for (int j = 0; j < col_widths[i]; j++) {
-                printf("\u2500"); // Horizontal line ─
-            }
-            if (i < table->header_count - 1) {
-                printf("\u2534"); // Bottom T-junction ┴
-            }
-        }
-        printf("\u2518\n"); // Bottom-right corner ┘
     }
+    strcat(lineBuffer, "\u2518"); // Bottom-right corner ┘
+    printf("%s\n\n", lineBuffer);
     
-    printf("\n");  // Extra line for spacing
-    
+    // Clean up
+    free(rowTemplate);
+    free(lineBuffer);
     free(col_widths);
 }

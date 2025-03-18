@@ -8,6 +8,108 @@
 #include "line_reader.h"
 #include "structured_data.h"
 #include "filters.h"
+#include <time.h>  // Added for time functions
+
+
+/**
+ * Display a welcome banner with BBQ sauce invention time
+ */
+void display_welcome_banner(void) {
+    // Calculate time since BBQ sauce invention (January 1, 1650)
+    // Current time
+    time_t now = time(NULL);
+    struct tm *now_tm = localtime(&now);
+    
+    // January 1, 1650
+    int bbq_year = 1650;
+    int current_year = now_tm->tm_year + 1900;
+    
+    // Calculate difference in years
+    int years = current_year - bbq_year;
+    
+    // Calculate remaining months, days, etc.
+    int months = now_tm->tm_mon;  // 0-11 for Jan-Dec
+    int days = now_tm->tm_mday - 1; // Assuming invention was on the 1st
+    int hours = now_tm->tm_hour;
+    int minutes = now_tm->tm_min;
+    int seconds = now_tm->tm_sec;
+    
+    // Format the time string
+    char time_str[256];
+    snprintf(time_str, sizeof(time_str), 
+             "It's been %d years, %d months, %d days, %d hours, %d minutes, %d seconds since BBQ sauce was invented",
+             years, months, days, hours, minutes, seconds);
+    
+    // Get console width to center the box
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    int consoleWidth = 80; // Default width if we can't get actual console info
+    
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+        consoleWidth = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    }
+    
+    // Calculate box width based on content
+    const char* title = "Welcome to shell!";
+    
+    // Calculate the minimum box width needed - ensure it fits the time string
+    int min_width = strlen(time_str) + 4; // Add padding
+    int box_width = min_width;
+    
+    // Calculate left padding to center the box
+    int left_padding = (consoleWidth - box_width - 2) / 2; // -2 for the border chars
+    if (left_padding < 0) left_padding = 0;
+    
+    // Define colors
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    WORD boxColor = FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    WORD textColor = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    WORD originalAttrs;
+    
+    // Get original console attributes
+    CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
+    GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
+    originalAttrs = consoleInfo.wAttributes;
+    
+    // Clear any previous content (important to remove the game trivia box)
+    system("cls");
+    
+    // Set color for box drawing
+    SetConsoleTextAttribute(hConsole, boxColor);
+    
+    // Top border
+    printf("%*s\u250C", left_padding, "");
+    for (int i = 0; i < box_width; i++) printf("\u2500");
+    printf("\u2510\n");
+    
+    // Title row
+    printf("%*s\u2502", left_padding, "");
+    int title_padding = (box_width - strlen(title)) / 2;
+    SetConsoleTextAttribute(hConsole, textColor);
+    printf("%*s%s%*s", title_padding, "", title, box_width - title_padding - strlen(title), "");
+    SetConsoleTextAttribute(hConsole, boxColor);
+    printf("\u2502\n");
+    
+    // Separator
+    printf("%*s\u251C", left_padding, "");
+    for (int i = 0; i < box_width; i++) printf("\u2500");
+    printf("\u2524\n");
+    
+    // Time since invention row
+    printf("%*s\u2502", left_padding, "");
+    SetConsoleTextAttribute(hConsole, textColor);
+    printf(" %-*s ", box_width - 2, time_str);
+    SetConsoleTextAttribute(hConsole, boxColor);
+    printf("\u2502\n");
+    
+    // Bottom border
+    printf("%*s\u2514", left_padding, "");
+    for (int i = 0; i < box_width; i++) printf("\u2500");
+    printf("\u2518\n\n");
+    
+    // Reset console attributes
+    SetConsoleTextAttribute(hConsole, originalAttrs);
+}
+
 
 /**
  * Launch an external program
@@ -163,6 +265,9 @@ void lsh_loop(void) {
     char prompt_path[1024];
     char username[256] = "Elden Lord";
     
+    // Display the welcome banner at startup
+    display_welcome_banner();
+    
     do {
         // Get current directory for the prompt
         if (_getcwd(cwd, sizeof(cwd)) == NULL) {
@@ -193,7 +298,7 @@ void lsh_loop(void) {
         }
         
         // Print prompt with username and shortened directory
-        printf("%s> ", prompt_path);
+        printf("%s -> ", prompt_path);
         
         line = lsh_read_line();
         

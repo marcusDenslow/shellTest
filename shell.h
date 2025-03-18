@@ -7,7 +7,12 @@
 #define SHELL_H
 
 #include "common.h"
-#include "structured_data.h"  // Add this include
+#include "structured_data.h"
+
+/**
+ * Display a welcome banner with BBQ sauce invention time
+ */
+void display_welcome_banner(void);
 
 /**
  * Execute a command

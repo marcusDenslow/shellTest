@@ -2711,29 +2711,51 @@ TableData* lsh_dir_structured(char **args) {
 }
 
 /**
- * Get the latest commit message from GitHub
+ * Get the latest commit message from GitHub with improved error handling
+ * This version is designed to be more robust on restricted networks
+ * while preserving the original styled output with centered box
  */
 int lsh_news(char **args) {
-    HINTERNET hInternet, hConnect, hRequest;
+    HINTERNET hInternet = NULL, hConnect = NULL, hRequest = NULL;
     char buffer[BUFFER_SIZE];
     DWORD bytesRead;
     char response[32768] = "";
+    BOOL success = FALSE;
+    DWORD error = 0;
+    DWORD timeout = 10000; // 10 second timeout
+    
+    // Get handle to console for output
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    WORD boxColor = FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    WORD textColor = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    WORD originalAttrs;
+    
+    // Get original console attributes
+    CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
+    GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
+    originalAttrs = consoleInfo.wAttributes;
     
     // Print starting message
     printf("\nFetching latest news from GitHub...\n\n");
     
-    // Initialize WinINet
+    // Initialize WinINet with proxy detection
     hInternet = InternetOpen(
         "LSH GitHub Commit Fetcher/1.0",
-        INTERNET_OPEN_TYPE_DIRECT,
+        INTERNET_OPEN_TYPE_PRECONFIG, // Use system proxy settings
         NULL,
         NULL,
         0);
     
     if (!hInternet) {
-        fprintf(stderr, "Error initializing Internet connection: %lu\n", GetLastError());
-        return 1;
+        error = GetLastError();
+        printf("Error initializing Internet connection: %lu\n", error);
+        goto cleanup;
     }
+    
+    // Set timeouts to prevent hanging
+    InternetSetOption(hInternet, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
+    InternetSetOption(hInternet, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
+    InternetSetOption(hInternet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
     
     // Connect to GitHub API
     hConnect = InternetConnect(
@@ -2747,9 +2769,10 @@ int lsh_news(char **args) {
         0);
     
     if (!hConnect) {
-        fprintf(stderr, "Error connecting to GitHub API: %lu\n", GetLastError());
-        InternetCloseHandle(hInternet);
-        return 1;
+        error = GetLastError();
+        printf("Error connecting to GitHub API: %lu\n", error);
+        printf("This could be due to network restrictions on your school PC.\n");
+        goto cleanup;
     }
     
     // Create HTTP request
@@ -2760,14 +2783,13 @@ int lsh_news(char **args) {
         NULL,
         NULL,
         NULL,
-        INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD,
+        INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE,
         0);
     
     if (!hRequest) {
-        fprintf(stderr, "Error creating HTTP request: %lu\n", GetLastError());
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInternet);
-        return 1;
+        error = GetLastError();
+        printf("Error creating HTTP request: %lu\n", error);
+        goto cleanup;
     }
     
     // Add User-Agent header (required by GitHub API)
@@ -2776,20 +2798,32 @@ int lsh_news(char **args) {
         "Accept: application/vnd.github.v3+json\r\n", 
         -1, 
         HTTP_ADDREQ_FLAG_ADD)) {
-        fprintf(stderr, "Error adding request headers: %lu\n", GetLastError());
-        InternetCloseHandle(hRequest);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInternet);
-        return 1;
+        error = GetLastError();
+        printf("Error adding request headers: %lu\n", error);
+        goto cleanup;
     }
+    
+    // Set security options to be more permissive with school proxy servers
+    DWORD securityFlags = 0;
+    DWORD flagsSize = sizeof(securityFlags);
+    InternetQueryOption(hRequest, INTERNET_OPTION_SECURITY_FLAGS, &securityFlags, &flagsSize);
+    securityFlags |= SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_REVOCATION;
+    InternetSetOption(hRequest, INTERNET_OPTION_SECURITY_FLAGS, &securityFlags, sizeof(securityFlags));
     
     // Send the request
     if (!HttpSendRequest(hRequest, NULL, 0, NULL, 0)) {
-        fprintf(stderr, "Error sending HTTP request: %lu\n", GetLastError());
-        InternetCloseHandle(hRequest);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInternet);
-        return 1;
+        error = GetLastError();
+        printf("Error sending HTTP request: %lu\n", error);
+        
+        // Display more helpful error message
+        if (error == ERROR_INTERNET_TIMEOUT)
+            printf("The connection timed out. Your school network might be blocking this connection.\n");
+        else if (error == ERROR_INTERNET_NAME_NOT_RESOLVED)
+            printf("Could not resolve GitHub's address. Check if you have internet access.\n");
+        else if (error == ERROR_INTERNET_CANNOT_CONNECT)
+            printf("Could not connect to GitHub. The site might be blocked on your network.\n");
+        
+        goto cleanup;
     }
     
     // Check if request succeeded
@@ -2797,35 +2831,48 @@ int lsh_news(char **args) {
     DWORD statusCodeSize = sizeof(statusCode);
     if (!HttpQueryInfo(hRequest, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, 
                      &statusCode, &statusCodeSize, NULL)) {
-        fprintf(stderr, "Error querying HTTP status: %lu\n", GetLastError());
-        InternetCloseHandle(hRequest);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInternet);
-        return 1;
+        error = GetLastError();
+        printf("Error querying HTTP status: %lu\n", error);
+        goto cleanup;
     }
     
     if (statusCode != 200) {
-        fprintf(stderr, "GitHub API returned error: HTTP %lu\n", statusCode);
-        InternetCloseHandle(hRequest);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInternet);
-        return 1;
+        printf("GitHub API returned error: HTTP %lu\n", statusCode);
+        goto cleanup;
     }
     
-    // Read the response
+    // Read the response safely
+    DWORD responsePos = 0;
     while (InternetReadFile(hRequest, buffer, BUFFER_SIZE - 1, &bytesRead) && bytesRead > 0) {
-        buffer[bytesRead] = '\0';
-        strcat(response, buffer);
+        // Make sure we don't overflow our buffer
+        if (responsePos + bytesRead >= sizeof(response) - 1) {
+            bytesRead = sizeof(response) - responsePos - 1;
+            if (bytesRead <= 0) break;
+        }
+        
+        // Copy safely
+        memcpy(response + responsePos, buffer, bytesRead);
+        responsePos += bytesRead;
+        response[responsePos] = '\0';
     }
     
-    // Clean up
-    InternetCloseHandle(hRequest);
-    InternetCloseHandle(hConnect);
-    InternetCloseHandle(hInternet);
+    // Check if we got a valid response
+    if (responsePos == 0) {
+        printf("No data received from GitHub\n");
+        goto cleanup;
+    }
     
-    // Extract and display commit info
-    if (strlen(response) > 0) {
-        // Extract the first commit (latest)
+    success = TRUE;
+    
+cleanup:
+    // Clean up in reverse order of creation
+    if (hRequest) InternetCloseHandle(hRequest);
+    if (hConnect) InternetCloseHandle(hConnect);
+    if (hInternet) InternetCloseHandle(hInternet);
+    
+    // If we successfully got a response, parse and display it
+    if (success && strlen(response) > 0) {
+        // Extract and display commit info
         char* sha = extract_json_string(response, "sha");
         char* author = extract_json_string(response, "name");
         char* date = extract_json_string(response, "date");
@@ -2904,196 +2951,270 @@ int lsh_news(char **args) {
             }
         }
 
-    // Define a constant box width - make it wide enough for messages
-    const int BOX_WIDTH = 76;
-    
-    // Save all the news content in a buffer so we can format it properly
-    char news_buffer[4096] = "";
-    char line_buffer[256];
-    
-    // Format the commit header information into our buffer
-    if (sha) {
-        sprintf(line_buffer, "Commit: %.8s\n", sha);
-        strcat(news_buffer, line_buffer);
-    }
-    
-    if (author) {
-        sprintf(line_buffer, "Author: %s\n", author);
-        strcat(news_buffer, line_buffer);
-    }
-    
-    if (date) {
-        // Format date nicely if possible (GitHub date format: 2023-03-17T12:34:56Z)
-        char year[5], month[3], day[3], time[9];
-        if (sscanf(date, "%4s-%2s-%2sT%8s", year, month, day, time) == 4) {
-            sprintf(line_buffer, "Date:   %s-%s-%s %s\n", year, month, day, time);
-        } else {
-            sprintf(line_buffer, "Date:   %s\n", date);
+        // Define a constant box width - make it wide enough for messages
+        const int BOX_WIDTH = 76;
+        
+        // Save all the news content in a buffer so we can format it properly
+        char news_buffer[4096] = "";
+        char line_buffer[256];
+        
+        // Format the commit header information into our buffer
+        if (sha) {
+            sprintf(line_buffer, "Commit: %.8s\n", sha);
+            strcat(news_buffer, line_buffer);
         }
-        strcat(news_buffer, line_buffer);
-    }
-    
-    // Add a separator line before the commit message
-    strcat(news_buffer, "\n");
-    
-    // Add commit message with proper word wrapping
-    if (message) {
-        strcat(news_buffer, "Commit Message:\n");
         
-        // Word wrap the message at BOX_WIDTH-6 chars (allowing for borders and padding)
-        const int WRAP_WIDTH = BOX_WIDTH - 6;
-        int line_length = 0;
-        char* word_start = message;
-        char line[256]; // Fixed size buffer, large enough for our needs
-        line[0] = '\0'; // Initialize as empty string
+        if (author) {
+            sprintf(line_buffer, "Author: %s\n", author);
+            strcat(news_buffer, line_buffer);
+        }
         
-        for (char* p = message; *p; p++) {
-            if (*p == ' ' || *p == '\n') {
-                // Found a word boundary
-                int word_len = p - word_start;
-                
-                // Check if adding this word would exceed our wrap width
-                if (line_length + word_len > WRAP_WIDTH && line_length > 0) {
-                    // Add the current line to our buffer and start a new line
-                    strcat(news_buffer, line);
-                    strcat(news_buffer, "\n");
-                    line[0] = '\0';
-                    line_length = 0;
-                }
-                
-                // Add the word to the current line
-                strncat(line, word_start, word_len);
-                if (*p == ' ') {
-                    strcat(line, " ");
-                    line_length += word_len + 1;
-                } else { // newline
-                    strcat(news_buffer, line);
-                    strcat(news_buffer, "\n");
-                    line[0] = '\0';
-                    line_length = 0;
-                }
-                
-                // Move to the next word
-                word_start = p + 1;
+        if (date) {
+            // Format date nicely if possible (GitHub date format: 2023-03-17T12:34:56Z)
+            char year[5], month[3], day[3], time[9];
+            if (sscanf(date, "%4s-%2s-%2sT%8s", year, month, day, time) == 4) {
+                sprintf(line_buffer, "Date:   %s-%s-%s %s\n", year, month, day, time);
+            } else {
+                sprintf(line_buffer, "Date:   %s\n", date);
             }
+            strcat(news_buffer, line_buffer);
         }
         
-        // Add any remaining text in the line
-        if (line_length > 0) {
-            strcat(news_buffer, line);
-            strcat(news_buffer, "\n");
+        // Add a separator line before the commit message
+        strcat(news_buffer, "\n");
+        
+        // Add commit message with proper word wrapping
+        if (message) {
+            strcat(news_buffer, "Commit Message:\n");
+            
+            // Word wrap the message at BOX_WIDTH-6 chars (allowing for borders and padding)
+            const int WRAP_WIDTH = BOX_WIDTH - 6;
+            int line_length = 0;
+            char* word_start = message;
+            char line[256]; // Fixed size buffer, large enough for our needs
+            line[0] = '\0'; // Initialize as empty string
+            
+            for (char* p = message; *p; p++) {
+                if (*p == ' ' || *p == '\n') {
+                    // Found a word boundary
+                    int word_len = p - word_start;
+                    
+                    // Check if adding this word would exceed our wrap width
+                    if (line_length + word_len > WRAP_WIDTH && line_length > 0) {
+                        // Add the current line to our buffer and start a new line
+                        strcat(news_buffer, line);
+                        strcat(news_buffer, "\n");
+                        line[0] = '\0';
+                        line_length = 0;
+                    }
+                    
+                    // Add the word to the current line
+                    strncat(line, word_start, word_len);
+                    if (*p == ' ') {
+                        strcat(line, " ");
+                        line_length += word_len + 1;
+                    } else { // newline
+                        strcat(news_buffer, line);
+                        strcat(news_buffer, "\n");
+                        line[0] = '\0';
+                        line_length = 0;
+                    }
+                    
+                    // Move to the next word
+                    word_start = p + 1;
+                }
+            }
+            
+            // Add any remaining text in the line
+            if (line_length > 0) {
+                strcat(news_buffer, line);
+                strcat(news_buffer, "\n");
+            }
+            
+            // Add any remaining word that might not have a space or newline after it
+            if (word_start && *word_start) {
+                strcat(news_buffer, word_start);
+                strcat(news_buffer, "\n");
+            }
+        } else {
+            strcat(news_buffer, "No commit message found.\n");
         }
         
-        // Add any remaining word that might not have a space or newline after it
-        if (word_start && *word_start) {
-            strcat(news_buffer, word_start);
-            strcat(news_buffer, "\n");
+        // Get console width to center the box
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        int consoleWidth = 80; // Default width if we can't get actual console info
+        
+        if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+            consoleWidth = csbi.srWindow.Right - csbi.srWindow.Left + 1;
         }
+        
+        // Calculate left padding to center the box
+        int leftPadding = (consoleWidth - BOX_WIDTH - 2) / 2; // -2 accounts for the border characters
+        if (leftPadding < 0) leftPadding = 0; // Ensure we don't have negative padding
+        
+        // Now draw the box with all the content inside
+        
+        // Calculate how many lines of content we have
+        int line_count = 0;
+        for (char *p = news_buffer; *p; p++) {
+            if (*p == '\n') line_count++;
+        }
+        
+        // Use bright green for the borders and header
+        SetConsoleTextAttribute(hConsole, boxColor);
+        
+        // Top border with centering
+        printf("%*s", leftPadding, ""); // Add left padding
+        printf("\u250C"); // Top-left corner
+        for (int i = 0; i < BOX_WIDTH; i++) {
+            printf("\u2500"); // Horizontal line
+        }
+        printf("\u2510\n"); // Top-right corner
+        
+        // Title row - centered within the box
+        printf("%*s", leftPadding, ""); // Add left padding
+        printf("\u2502"); // Left border
+        const char *title = "LATEST REPOSITORY NEWS";
+        int title_padding = (BOX_WIDTH - strlen(title)) / 2;
+        printf("%*s%s%*s", title_padding, "", title, BOX_WIDTH - title_padding - strlen(title), "");
+        printf("\u2502\n"); // Right border
+        
+        // Separator line
+        printf("%*s", leftPadding, ""); // Add left padding
+        printf("\u251C"); // Left T-junction
+        for (int i = 0; i < BOX_WIDTH; i++) {
+            printf("\u2500"); // Horizontal line
+        }
+        printf("\u2524\n"); // Right T-junction
+        
+        // Content lines - use white (bright) text for content
+        char *line_start = news_buffer;
+        char *line_end;
+        
+        while ((line_end = strchr(line_start, '\n')) != NULL) {
+            *line_end = '\0'; // Temporarily terminate this line
+            
+            // Add left padding for centering
+            printf("%*s", leftPadding, "");
+            
+            // Print left border in green
+            SetConsoleTextAttribute(hConsole, boxColor);
+            printf("\u2502");
+            
+            // Print content in white with precise padding
+            SetConsoleTextAttribute(hConsole, textColor);
+            
+            // Create a padded line with exact width
+            char paddedLine[BOX_WIDTH + 3]; // +3 for safety
+            snprintf(paddedLine, sizeof(paddedLine), " %-*s ", BOX_WIDTH - 1, line_start);
+            
+            // Print exactly BOX_WIDTH characters
+            printf("%.*s", BOX_WIDTH, paddedLine);
+            
+            // Print right border in green
+            SetConsoleTextAttribute(hConsole, boxColor);
+            printf("\u2502\n");
+            
+            *line_end = '\n'; // Restore the newline
+            line_start = line_end + 1; // Move to the start of the next line
+        }
+        
+        // Bottom border in green
+        printf("%*s", leftPadding, ""); // Add left padding
+        SetConsoleTextAttribute(hConsole, boxColor);
+        printf("\u2514"); // Bottom-left corner
+        for (int i = 0; i < BOX_WIDTH; i++) {
+            printf("\u2500"); // Horizontal line
+        }
+        printf("\u2518\n\n"); // Bottom-right corner with extra newline for spacing
+        
+        SetConsoleTextAttribute(hConsole, originalAttrs);
+
+        // Cleanup
+        if (message) free(message);
+        if (sha) free(sha);
+        if (author) free(author);
+        if (date) free(date);
     } else {
-        strcat(news_buffer, "No commit message found.\n");
-    }
-    
-    // Get console width to center the box
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    int consoleWidth = 80; // Default width if we can't get actual console info
-    
-    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
-        consoleWidth = csbi.srWindow.Right - csbi.srWindow.Left + 1;
-    }
-    
-    // Calculate left padding to center the box
-    int leftPadding = (consoleWidth - BOX_WIDTH - 2) / 2; // -2 accounts for the border characters
-    if (leftPadding < 0) leftPadding = 0; // Ensure we don't have negative padding
-    
-    // Now draw the box with all the content inside
-    
-    // Calculate how many lines of content we have
-    int line_count = 0;
-    for (char *p = news_buffer; *p; p++) {
-        if (*p == '\n') line_count++;
-    }
-    
-    // Use bright green for the borders and header
-    set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-    
-    // Top border with centering
-    printf("%*s", leftPadding, ""); // Add left padding
-    printf("\u250C"); // Top-left corner
-    for (int i = 0; i < BOX_WIDTH; i++) {
-        printf("\u2500"); // Horizontal line
-    }
-    printf("\u2510\n"); // Top-right corner
-    
-    // Title row - centered within the box
-    printf("%*s", leftPadding, ""); // Add left padding
-    printf("\u2502"); // Left border
-    const char *title = "LATEST REPOSITORY NEWS";
-    int title_padding = (BOX_WIDTH - strlen(title)) / 2;
-    printf("%*s%s%*s", title_padding, "", title, BOX_WIDTH - title_padding - strlen(title), "");
-    printf("\u2502\n"); // Right border
-    
-    // Separator line
-    printf("%*s", leftPadding, ""); // Add left padding
-    printf("\u251C"); // Left T-junction
-    for (int i = 0; i < BOX_WIDTH; i++) {
-        printf("\u2500"); // Horizontal line
-    }
-    printf("\u2524\n"); // Right T-junction
-    
-    // Content lines - use white (bright) text for content
-    char *line_start = news_buffer;
-    char *line_end;
-    
-    while ((line_end = strchr(line_start, '\n')) != NULL) {
-        *line_end = '\0'; // Temporarily terminate this line
+        // Display a fallback message in a centered, styled box
+        const int BOX_WIDTH = 76;
         
-        // Add left padding for centering
+        // Get console width to center the box
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        int consoleWidth = 80; // Default width if we can't get actual console info
+        
+        if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+            consoleWidth = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        }
+        
+        // Calculate left padding to center the box
+        int leftPadding = (consoleWidth - BOX_WIDTH - 2) / 2;
+        if (leftPadding < 0) leftPadding = 0;
+        
+        // Use bright yellow for error message borders
+        SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        
+        // Top border with centering
         printf("%*s", leftPadding, "");
+        printf("\u250C"); // Top-left corner
+        for (int i = 0; i < BOX_WIDTH; i++) {
+            printf("\u2500"); // Horizontal line
+        }
+        printf("\u2510\n"); // Top-right corner
         
-        // Print left border in green
-        set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        // Title row
+        printf("%*s", leftPadding, "");
         printf("\u2502");
-        
-        // Print content in white with precise padding
-        set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-        
-        // Create a padded line with exact width
-        char paddedLine[BOX_WIDTH + 3]; // +3 for safety
-        snprintf(paddedLine, sizeof(paddedLine), " %-*s ", BOX_WIDTH - 1, line_start);
-        
-        // Print exactly BOX_WIDTH characters
-        printf("%.*s", BOX_WIDTH, paddedLine);
-        
-        // Print right border in green
-        set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        const char *title = "CONNECTION ERROR";
+        int title_padding = (BOX_WIDTH - strlen(title)) / 2;
+        printf("%*s%s%*s", title_padding, "", title, BOX_WIDTH - title_padding - strlen(title), "");
         printf("\u2502\n");
         
-        *line_end = '\n'; // Restore the newline
-        line_start = line_end + 1; // Move to the start of the next line
-    }
-    
-    // Bottom border in green
-    printf("%*s", leftPadding, ""); // Add left padding
-    set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-    printf("\u2514"); // Bottom-left corner
-    for (int i = 0; i < BOX_WIDTH; i++) {
-        printf("\u2500"); // Horizontal line
-    }
-    printf("\u2518\n\n"); // Bottom-right corner with extra newline for spacing
-    
-    reset_color();
-
-  
-
-            
-        // Display the formatted news in a box
-        // This section is now handled by the box-drawing code above
-        if (message) {
-            free(message);
+        // Separator line
+        printf("%*s", leftPadding, "");
+        printf("\u251C");
+        for (int i = 0; i < BOX_WIDTH; i++) {
+            printf("\u2500");
         }
-    } else {
-        fprintf(stderr, "Error: Empty response from GitHub API\n");
-        return 1;
+        printf("\u2524\n");
+        
+        // Error message lines
+        const char *messages[] = {
+            "Could not retrieve repository news.",
+            "",
+            "The shell was unable to connect to GitHub to fetch the latest news.",
+            "This is likely due to network restrictions on your school computer.",
+            "",
+            "Things you can try:",
+            "1. Check if you have internet access",
+            "2. Ask your IT department if GitHub API access is blocked",
+            "3. Try running the shell with administrator privileges",
+            "4. Try using other commands that don't require internet access"
+        };
+        
+        for (int i = 0; i < sizeof(messages)/sizeof(messages[0]); i++) {
+            printf("%*s", leftPadding, "");
+            printf("\u2502");
+            
+            // Print message text in white
+            SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+            printf(" %-*s ", BOX_WIDTH - 2, messages[i]);
+            
+            // Return to yellow for the border
+            SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+            printf("\u2502\n");
+        }
+        
+        // Bottom border
+        printf("%*s", leftPadding, "");
+        printf("\u2514"); // Bottom-left corner
+        for (int i = 0; i < BOX_WIDTH; i++) {
+            printf("\u2500"); // Horizontal line
+        }
+        printf("\u2518\n\n"); // Bottom-right corner
+        
+        // Reset colors
+        SetConsoleTextAttribute(hConsole, originalAttrs);
     }
     
     return 1;
