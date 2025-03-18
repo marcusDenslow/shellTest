@@ -2926,9 +2926,6 @@ cleanup:
                                     case '\\': // Backslash
                                         *dst++ = '\\';
                                         break;
-                                    case '"':  // Double quote
-                                        *dst++ = '"';
-                                        break;
                                     default:   // Copy as-is for other escape sequences
                                         *dst++ = *src;
                                         break;

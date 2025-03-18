@@ -178,71 +178,128 @@ TableData* lsh_sort_by(TableData *input, char **args) {
 
 /**
  * Select specific columns from a table
+ * Supports both space-separated and comma-separated field names
  */
 TableData* lsh_select(TableData *input, char **args) {
     if (!input || !args || !args[0]) {
         fprintf(stderr, "lsh: select: missing arguments\n");
-        fprintf(stderr, "Usage: ... | select FIELD1,FIELD2,...\n");
-        fprintf(stderr, "  e.g.: ls | select Name,Size\n");
+        fprintf(stderr, "Usage: ... | select FIELD1 FIELD2 ...\n");
+        fprintf(stderr, "  e.g.: ls | select Name Size\n");
         return NULL;
     }
     
-    // Parse fields to select
-    char *field_list = args[0];
-    char *field_copy = _strdup(field_list); // Make a copy since strtok modifies the string
-    if (!field_copy) {
-        fprintf(stderr, "lsh: allocation error in select\n");
-        return NULL;
-    }
+    // Count how many fields we have
+    int num_fields = 0;
+    int arg_index = 0;
     
-    // Count how many fields are specified
-    int num_fields = 1; // Start with 1 for the first field
-    for (char *p = field_list; *p; p++) {
-        if (*p == ',') num_fields++;
+    // First pass: count fields
+    while (args[arg_index] != NULL) {
+        // Check if this argument contains commas
+        char *p = args[arg_index];
+        int commas_in_arg = 0;
+        
+        while (*p) {
+            if (*p == ',') {
+                commas_in_arg++;
+            }
+            p++;
+        }
+        
+        if (commas_in_arg > 0) {
+            // Add number of comma-separated fields (commas + 1)
+            num_fields += commas_in_arg + 1;
+        } else {
+            // Just one field in this argument
+            num_fields++;
+        }
+        
+        arg_index++;
     }
     
     // Allocate array for field indices
     int *field_indices = (int*)malloc(num_fields * sizeof(int));
     if (!field_indices) {
         fprintf(stderr, "lsh: allocation error in select\n");
-        free(field_copy);
         return NULL;
     }
     
-    // Parse field names and get their indices
-    char *field_token;
-    char *saveptr;
+    // Second pass: process field names
     int field_count = 0;
+    arg_index = 0;
     
-    field_token = strtok_s(field_copy, ",", &saveptr);
-    while (field_token && field_count < num_fields) {
-        // Trim whitespace
-        while (isspace(*field_token)) field_token++;
-        char *end = field_token + strlen(field_token) - 1;
-        while (end > field_token && isspace(*end)) end--;
-        *(end + 1) = '\0';
-        
-        // Find field index
-        int found = 0;
-        for (int i = 0; i < input->header_count; i++) {
-            if (strcasecmp(input->headers[i], field_token) == 0) {
-                field_indices[field_count++] = i;
-                found = 1;
-                break;
-            }
-        }
-        
-        if (!found) {
-            fprintf(stderr, "lsh: select: unknown field '%s'\n", field_token);
+    while (args[arg_index] != NULL && field_count < num_fields) {
+        // Make a copy since we'll modify it with strtok
+        char *arg_copy = _strdup(args[arg_index]);
+        if (!arg_copy) {
+            fprintf(stderr, "lsh: allocation error in select\n");
             free(field_indices);
-            free(field_copy);
             return NULL;
         }
         
-        field_token = strtok_s(NULL, ",", &saveptr);
+        // Check if this argument contains commas
+        if (strchr(arg_copy, ',')) {
+            // Handle comma-separated fields
+            char *field_token;
+            char *saveptr;
+            
+            field_token = strtok_s(arg_copy, ",", &saveptr);
+            while (field_token && field_count < num_fields) {
+                // Trim whitespace
+                while (isspace(*field_token)) field_token++;
+                char *end = field_token + strlen(field_token) - 1;
+                while (end > field_token && isspace(*end)) end--;
+                *(end + 1) = '\0';
+                
+                // Find field index
+                int found = 0;
+                for (int i = 0; i < input->header_count; i++) {
+                    if (strcasecmp(input->headers[i], field_token) == 0) {
+                        field_indices[field_count++] = i;
+                        found = 1;
+                        break;
+                    }
+                }
+                
+                if (!found) {
+                    fprintf(stderr, "lsh: select: unknown field '%s'\n", field_token);
+                    free(field_indices);
+                    free(arg_copy);
+                    return NULL;
+                }
+                
+                field_token = strtok_s(NULL, ",", &saveptr);
+            }
+        } else {
+            // This is a single field name (no commas)
+            char *field = arg_copy;
+            
+            // Trim whitespace
+            while (isspace(*field)) field++;
+            char *end = field + strlen(field) - 1;
+            while (end > field && isspace(*end)) end--;
+            *(end + 1) = '\0';
+            
+            // Find field index
+            int found = 0;
+            for (int i = 0; i < input->header_count; i++) {
+                if (strcasecmp(input->headers[i], field) == 0) {
+                    field_indices[field_count++] = i;
+                    found = 1;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                fprintf(stderr, "lsh: select: unknown field '%s'\n", field);
+                free(arg_copy);
+                free(field_indices);
+                return NULL;
+            }
+        }
+        
+        free(arg_copy);
+        arg_index++;
     }
-    
-    free(field_copy);
     
     // Create new headers for result table
     char **new_headers = (char**)malloc(field_count * sizeof(char*));

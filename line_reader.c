@@ -7,14 +7,27 @@
 #include "tab_complete.h"
 #include "builtins.h"  // Added for history access
 
+// Define key codes
+#define KEY_BACKSPACE 8
+#define KEY_TAB 9
+#define KEY_ENTER 13
+#define KEY_ESCAPE 27
+
 /**
  * Read a line of input from the user with tab completion
  */
 char *lsh_read_line(void) {
+    // Allocate buffer for the input
     int bufsize = LSH_RL_BUFSIZE;
-    int position = 0;
-    char *buffer = malloc(sizeof(char) * bufsize);
-    int c;
+    char *buffer = malloc(bufsize * sizeof(char));
+    if (!buffer) {
+        fprintf(stderr, "lsh: allocation error\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    // Initialize buffer as empty string
+    buffer[0] = '\0';
+    
     char *suggestion = NULL;
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
@@ -37,25 +50,38 @@ char *lsh_read_line(void) {
     // Flag to track if we're ready to execute after accepting a suggestion
     int ready_to_execute = 0;
     
-    // Variables to track the prompt and original line
-    static char original_input[LSH_RL_BUFSIZE];
-    COORD promptEndPos;
+    // Current cursor position in the buffer
+    int position = 0;
     
     // Get original console attributes
     GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
     originalAttributes = consoleInfo.wAttributes;
     
-    // Save prompt end position for reference
-    promptEndPos = consoleInfo.dwCursorPosition;
+    // Save the initial cursor position (after prompt)
+    COORD promptEndPos = consoleInfo.dwCursorPosition;
     
-    if (!buffer) {
-        fprintf(stderr, "lsh: allocation error\n");
-        exit(EXIT_FAILURE);
-    }
+    // Set up the console for raw input
+    HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD oldMode;
+    GetConsoleMode(hStdin, &oldMode);
     
-    buffer[0] = '\0';  // Initialize empty string
+    // Disable line input mode
+    DWORD newMode = oldMode & ~ENABLE_LINE_INPUT;
     
-    while (1) {
+    // Also disable echo input - we'll handle echoing ourselves
+    newMode &= ~ENABLE_ECHO_INPUT;
+    
+    // Must still be processed input for Ctrl+C to work
+    newMode |= ENABLE_PROCESSED_INPUT;
+    
+    // Apply new console mode
+    SetConsoleMode(hStdin, newMode);
+    
+    // Main input loop
+    int c;
+    int done = 0;
+    
+    while (!done) {
         // Clear any previous suggestion from screen if not in tab cycling
         if (suggestion && !tab_matches) {
             // Get current cursor position
@@ -78,7 +104,7 @@ char *lsh_read_line(void) {
         }
         
         // Find and display new suggestion only if we're not in tab cycling mode
-        if (!tab_matches && !ready_to_execute) {
+        if (!tab_matches && !ready_to_execute && position == strlen(buffer)) {
             buffer[position] = '\0';  // Ensure buffer is null-terminated
             suggestion = find_best_match(buffer);
             if (suggestion) {
@@ -121,9 +147,177 @@ char *lsh_read_line(void) {
             }
         }
         
-        c = _getch();  // Get character without echo
+        // Read a character
+        c = _getch();
         
-        if (c == KEY_ENTER) {
+        // Check for CTRL key state for Ctrl+Backspace support
+        SHORT ctrlKeyState = GetKeyState(VK_CONTROL);
+        int ctrlPressed = (ctrlKeyState & 0x8000) != 0;
+        
+        // Early detection for arrow key sequences
+        if (c == 0 || c == 224) {
+            // Arrow key - get the second byte
+            c = _getch();
+            
+            switch (c) {
+                case 75: // Left arrow
+                    if (position > 0) {
+                        // Move cursor left on screen
+                        CONSOLE_SCREEN_BUFFER_INFO csbi;
+                        GetConsoleScreenBufferInfo(hConsole, &csbi);
+                        csbi.dwCursorPosition.X--;
+                        SetConsoleCursorPosition(hConsole, csbi.dwCursorPosition);
+                        
+                        // Update position in buffer
+                        position--;
+                    }
+                    break;
+                    
+                case 77: // Right arrow
+                    if (position < strlen(buffer)) {
+                        // Move cursor right on screen
+                        CONSOLE_SCREEN_BUFFER_INFO csbi;
+                        GetConsoleScreenBufferInfo(hConsole, &csbi);
+                        csbi.dwCursorPosition.X++;
+                        SetConsoleCursorPosition(hConsole, csbi.dwCursorPosition);
+                        
+                        // Update position in buffer
+                        position++;
+                    }
+                    break;
+                    
+                case 72: // Up arrow - history backwards
+                    if (history_count > 0) {
+                        // Save original input if just starting navigation
+                        if (history_navigation_index == -1) {
+                            buffer[position] = '\0';
+                            strcpy(original_line, buffer);
+                            history_navigation_index = 0;
+                        } else if (history_navigation_index < (history_count < HISTORY_SIZE ? 
+                                  history_count - 1 : HISTORY_SIZE - 1)) {
+                            // Move further back in history if possible
+                            history_navigation_index++;
+                        }
+                        
+                        // Calculate which history entry to show
+                        int history_entry;
+                        if (history_count <= HISTORY_SIZE) {
+                            // History buffer isn't full yet
+                            history_entry = history_count - 1 - history_navigation_index;
+                        } else {
+                            // History buffer is full (circular)
+                            history_entry = (history_index - 1 - history_navigation_index + HISTORY_SIZE) % HISTORY_SIZE;
+                        }
+                        
+                        // Hide cursor to prevent flicker
+                        CONSOLE_CURSOR_INFO cursorInfo;
+                        GetConsoleCursorInfo(hConsole, &cursorInfo);
+                        BOOL originalCursorVisible = cursorInfo.bVisible;
+                        cursorInfo.bVisible = FALSE;
+                        SetConsoleCursorInfo(hConsole, &cursorInfo);
+                        
+                        // Clear current line
+                        SetConsoleCursorPosition(hConsole, promptEndPos);
+                        for (int i = 0; i < strlen(buffer) + 5; i++) {
+                            putchar(' ');
+                        }
+                        
+                        // Move back to start position
+                        SetConsoleCursorPosition(hConsole, promptEndPos);
+                        
+                        // Copy history entry to buffer
+                        strcpy(buffer, command_history[history_entry].command);
+                        position = strlen(buffer);
+                        
+                        // Display the command
+                        printf("%s", buffer);
+                        
+                        // Show cursor again
+                        cursorInfo.bVisible = originalCursorVisible;
+                        SetConsoleCursorInfo(hConsole, &cursorInfo);
+                    }
+                    break;
+                    
+                case 80: // Down arrow - history forwards
+                    if (history_navigation_index > 0) {
+                        // Move forward in history
+                        history_navigation_index--;
+                        
+                        // Calculate which history entry to show
+                        int history_entry;
+                        if (history_count <= HISTORY_SIZE) {
+                            // History buffer isn't full yet
+                            history_entry = history_count - 1 - history_navigation_index;
+                        } else {
+                            // History buffer is full (circular)
+                            history_entry = (history_index - 1 - history_navigation_index + HISTORY_SIZE) % HISTORY_SIZE;
+                        }
+                        
+                        // Hide cursor to prevent flicker
+                        CONSOLE_CURSOR_INFO cursorInfo;
+                        GetConsoleCursorInfo(hConsole, &cursorInfo);
+                        BOOL originalCursorVisible = cursorInfo.bVisible;
+                        cursorInfo.bVisible = FALSE;
+                        SetConsoleCursorInfo(hConsole, &cursorInfo);
+                        
+                        // Clear current line
+                        SetConsoleCursorPosition(hConsole, promptEndPos);
+                        for (int i = 0; i < strlen(buffer) + 5; i++) {
+                            putchar(' ');
+                        }
+                        
+                        // Move back to start position
+                        SetConsoleCursorPosition(hConsole, promptEndPos);
+                        
+                        // Copy history entry to buffer
+                        strcpy(buffer, command_history[history_entry].command);
+                        position = strlen(buffer);
+                        
+                        // Display the command
+                        printf("%s", buffer);
+                        
+                        // Show cursor again
+                        cursorInfo.bVisible = originalCursorVisible;
+                        SetConsoleCursorInfo(hConsole, &cursorInfo);
+                    }
+                    else if (history_navigation_index == 0) {
+                        // Return to original input
+                        history_navigation_index = -1;
+                        
+                        // Hide cursor to prevent flicker
+                        CONSOLE_CURSOR_INFO cursorInfo;
+                        GetConsoleCursorInfo(hConsole, &cursorInfo);
+                        BOOL originalCursorVisible = cursorInfo.bVisible;
+                        cursorInfo.bVisible = FALSE;
+                        SetConsoleCursorInfo(hConsole, &cursorInfo);
+                        
+                        // Clear current line
+                        SetConsoleCursorPosition(hConsole, promptEndPos);
+                        for (int i = 0; i < strlen(buffer) + 5; i++) {
+                            putchar(' ');
+                        }
+                        
+                        // Move back to start position
+                        SetConsoleCursorPosition(hConsole, promptEndPos);
+                        
+                        // Restore original input
+                        strcpy(buffer, original_line);
+                        position = strlen(buffer);
+                        
+                        // Display the original input
+                        printf("%s", buffer);
+                        
+                        // Show cursor again
+                        cursorInfo.bVisible = originalCursorVisible;
+                        SetConsoleCursorInfo(hConsole, &cursorInfo);
+                    }
+                    break;
+            }
+            
+            continue;
+        } else if (c == KEY_ENTER) {
+            // User pressed Enter - end input
+            
             // If we're ready to execute after accepting a suggestion
             if (ready_to_execute) {
                 putchar('\n');  // Echo newline
@@ -152,6 +346,9 @@ char *lsh_read_line(void) {
                 history_navigation_index = -1;
                 
                 ready_to_execute = 0;
+                
+                // Restore original console mode
+                SetConsoleMode(hStdin, oldMode);
                 return buffer;
             }
             // If we're in tab cycling mode, accept the current suggestion
@@ -184,6 +381,9 @@ char *lsh_read_line(void) {
                 if (already_typed) {
                     putchar('\n');  // Echo newline
                     buffer[position] = '\0';
+                    
+                    // Restore original console mode
+                    SetConsoleMode(hStdin, oldMode);
                     return buffer;
                 }
                 
@@ -247,6 +447,9 @@ char *lsh_read_line(void) {
                     free(suggestion);
                     suggestion = NULL;
                     showing_suggestion = 0;
+                    
+                    // Restore original console mode
+                    SetConsoleMode(hStdin, oldMode);
                     return buffer;
                 }
                 
@@ -283,6 +486,11 @@ char *lsh_read_line(void) {
                 putchar('\n');  // Echo newline
                 buffer[position] = '\0';
                 
+                // REMOVED: This line was causing duplicate history entries
+                // if (buffer[0] != '\0') {
+                //     lsh_add_to_history(buffer);
+                // }
+                
                 // Clean up
                 if (suggestion) free(suggestion);
                 
@@ -301,13 +509,80 @@ char *lsh_read_line(void) {
                 // Reset history navigation
                 history_navigation_index = -1;
                 
+                // Restore original console mode
+                SetConsoleMode(hStdin, oldMode);
                 return buffer;
             }
         } else if (c == KEY_BACKSPACE) {
             // User pressed Backspace
             if (position > 0) {
+                if (ctrlPressed) {
+                    // Handle Ctrl+Backspace - delete entire word
+                    // Find the start of the current word
+                    int word_start = position - 1;
+                    
+                    // Skip any spaces immediately before the cursor
+                    while (word_start >= 0 && (buffer[word_start] == ' ' || buffer[word_start] == '\t')) {
+                        word_start--;
+                    }
+                    
+                    // Find the beginning of the word
+                    while (word_start >= 0 && buffer[word_start] != ' ' && buffer[word_start] != '\t') {
+                        word_start--;
+                    }
+                    
+                    word_start++; // Move past the space or tab
+                    
+                    // Calculate how many characters to delete
+                    int chars_to_delete = position - word_start;
+                    
+                    if (chars_to_delete > 0) {
+                        // Get current cursor position
+                        CONSOLE_SCREEN_BUFFER_INFO csbi;
+                        GetConsoleScreenBufferInfo(hConsole, &csbi);
+                        
+                        // Move cursor back to start of word
+                        COORD newPos = csbi.dwCursorPosition;
+                        newPos.X -= chars_to_delete;
+                        SetConsoleCursorPosition(hConsole, newPos);
+                        
+                        // Hide cursor during redraw
+                        CONSOLE_CURSOR_INFO cursorInfo;
+                        GetConsoleCursorInfo(hConsole, &cursorInfo);
+                        BOOL originalCursorVisible = cursorInfo.bVisible;
+                        cursorInfo.bVisible = FALSE;
+                        SetConsoleCursorInfo(hConsole, &cursorInfo);
+                        
+                        // Shift the buffer contents to remove the word
+                        memmove(buffer + word_start, buffer + position, strlen(buffer) - position + 1);
+                        
+                        // Calculate length of text after cursor
+                        int textAfterLen = strlen(buffer + word_start);
+                        
+                        // Print the rest of the line and some spaces to erase old content
+                        printf("%s", buffer + word_start);
+                        for (int i = 0; i < chars_to_delete; i++) {
+                            putchar(' ');
+                        }
+                        
+                        // Move cursor back to the correct position
+                        COORD finalPos = newPos;
+                        finalPos.X += textAfterLen;
+                        SetConsoleCursorPosition(hConsole, finalPos);
+                        
+                        // Move cursor back to where the word was deleted
+                        SetConsoleCursorPosition(hConsole, newPos);
+                        
+                        // Update position
+                        position = word_start;
+                        
+                        // Restore cursor visibility
+                        cursorInfo.bVisible = originalCursorVisible;
+                        SetConsoleCursorInfo(hConsole, &cursorInfo);
+                    }
+                }
                 // Handle backspace differently when in tab cycling mode
-                if (tab_matches) {
+                else if (tab_matches) {
                     // If in tab cycling mode, immediately revert to original input
                     // Clear the line and redraw with just the original input
                     GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
@@ -338,149 +613,55 @@ char *lsh_read_line(void) {
                     tab_num_matches = 0;
                     tab_index = 0;
                     last_tab_prefix[0] = '\0';
-                } else {
-                    // Standard backspace behavior when not in tab cycling mode
+                } else if (position == strlen(buffer)) {
+                    // At end of line, backspace is simpler
                     position--;
-                    // Move cursor back, print space, move cursor back again
-                    printf("\b \b");
+                    printf("\b \b");  // Move back, erase, move back
                     buffer[position] = '\0';
+                } else {
+                    // Backspace in middle of line
+                    // Get current cursor position
+                    CONSOLE_SCREEN_BUFFER_INFO csbi;
+                    GetConsoleScreenBufferInfo(hConsole, &csbi);
+                    
+                    // Hide cursor during redraw
+                    CONSOLE_CURSOR_INFO cursorInfo;
+                    GetConsoleCursorInfo(hConsole, &cursorInfo);
+                    BOOL originalCursorVisible = cursorInfo.bVisible;
+                    cursorInfo.bVisible = FALSE;
+                    SetConsoleCursorInfo(hConsole, &cursorInfo);
+                    
+                    // Move cursor back one
+                    COORD newPos = csbi.dwCursorPosition;
+                    newPos.X--;
+                    SetConsoleCursorPosition(hConsole, newPos);
+                    
+                    // Shift buffer contents to remove the character
+                    position--;
+                    memmove(buffer + position, buffer + position + 1, strlen(buffer) - position);
+                    
+                    // Print rest of line and a space to erase last character
+                    printf("%s ", buffer + position);
+                    
+                    // Move cursor back to the correct position
+                    COORD finalPos = newPos;
+                    finalPos.X += strlen(buffer + position) + 1;
+                    SetConsoleCursorPosition(hConsole, finalPos);
+                    
+                    // Move cursor back to where the character was deleted
+                    SetConsoleCursorPosition(hConsole, newPos);
+                    
+                    // Restore cursor visibility
+                    cursorInfo.bVisible = originalCursorVisible;
+                    SetConsoleCursorInfo(hConsole, &cursorInfo);
                 }
                 
                 // Reset execution flag when editing
                 ready_to_execute = 0;
                 
-                // If we're in history navigation, exit it
+                // Exit history navigation mode if active
                 if (history_navigation_index >= 0) {
                     history_navigation_index = -1;
-                }
-            }
-        } else if (c == 224 || c == 0) {  // Arrow keys are typically preceded by 224 or 0
-            c = _getch();  // Get the actual arrow key code
-            
-            if (c == KEY_UP) {  // Up arrow - navigate history backwards
-                // Only use history if we have commands
-                if (history_count > 0) {
-                    // Save original input if just starting navigation
-                    if (history_navigation_index == -1) {
-                        buffer[position] = '\0';
-                        strcpy(original_line, buffer);
-                        history_navigation_index = 0;
-                    } else if (history_navigation_index < (history_count < HISTORY_SIZE ? 
-                              history_count - 1 : HISTORY_SIZE - 1)) {
-                        // Move further back in history if possible
-                        history_navigation_index++;
-                    }
-                    
-                    // Calculate which history entry to show
-                    int history_entry;
-                    if (history_count <= HISTORY_SIZE) {
-                        // History buffer isn't full yet
-                        history_entry = history_count - 1 - history_navigation_index;
-                    } else {
-                        // History buffer is full (circular)
-                        history_entry = (history_index - 1 - history_navigation_index + HISTORY_SIZE) % HISTORY_SIZE;
-                    }
-                    
-                    // Clear current line and display history entry
-                    // Hide cursor to prevent flicker
-                    CONSOLE_CURSOR_INFO cursorInfo;
-                    GetConsoleCursorInfo(hConsole, &cursorInfo);
-                    BOOL originalCursorVisible = cursorInfo.bVisible;
-                    cursorInfo.bVisible = FALSE;
-                    SetConsoleCursorInfo(hConsole, &cursorInfo);
-                    
-                    // Move cursor to beginning of line
-                    SetConsoleCursorPosition(hConsole, promptEndPos);
-                    
-                    // Clear the line
-                    DWORD numCharsWritten;
-                    FillConsoleOutputCharacter(hConsole, ' ', 120, promptEndPos, &numCharsWritten);
-                    FillConsoleOutputAttribute(hConsole, originalAttributes, 120, promptEndPos, &numCharsWritten);
-                    
-                    // Copy history entry to buffer
-                    strcpy(buffer, command_history[history_entry].command);
-                    position = strlen(buffer);
-                    
-                    // Display the command
-                    WriteConsole(hConsole, buffer, position, &numCharsWritten, NULL);
-                    
-                    // Show cursor again
-                    cursorInfo.bVisible = originalCursorVisible;
-                    SetConsoleCursorInfo(hConsole, &cursorInfo);
-                }
-            }
-            else if (c == KEY_DOWN) {  // Down arrow - navigate history forwards
-                if (history_navigation_index > 0) {
-                    // Move forward in history
-                    history_navigation_index--;
-                    
-                    // Calculate which history entry to show
-                    int history_entry;
-                    if (history_count <= HISTORY_SIZE) {
-                        // History buffer isn't full yet
-                        history_entry = history_count - 1 - history_navigation_index;
-                    } else {
-                        // History buffer is full (circular)
-                        history_entry = (history_index - 1 - history_navigation_index + HISTORY_SIZE) % HISTORY_SIZE;
-                    }
-                    
-                    // Clear current line and display history entry
-                    // Hide cursor to prevent flicker
-                    CONSOLE_CURSOR_INFO cursorInfo;
-                    GetConsoleCursorInfo(hConsole, &cursorInfo);
-                    BOOL originalCursorVisible = cursorInfo.bVisible;
-                    cursorInfo.bVisible = FALSE;
-                    SetConsoleCursorInfo(hConsole, &cursorInfo);
-                    
-                    // Move cursor to beginning of line
-                    SetConsoleCursorPosition(hConsole, promptEndPos);
-                    
-                    // Clear the line
-                    DWORD numCharsWritten;
-                    FillConsoleOutputCharacter(hConsole, ' ', 120, promptEndPos, &numCharsWritten);
-                    FillConsoleOutputAttribute(hConsole, originalAttributes, 120, promptEndPos, &numCharsWritten);
-                    
-                    // Copy history entry to buffer
-                    strcpy(buffer, command_history[history_entry].command);
-                    position = strlen(buffer);
-                    
-                    // Display the command
-                    WriteConsole(hConsole, buffer, position, &numCharsWritten, NULL);
-                    
-                    // Show cursor again
-                    cursorInfo.bVisible = originalCursorVisible;
-                    SetConsoleCursorInfo(hConsole, &cursorInfo);
-                }
-                else if (history_navigation_index == 0) {
-                    // Return to original input
-                    history_navigation_index = -1;
-                    
-                    // Clear current line and restore original input
-                    // Hide cursor to prevent flicker
-                    CONSOLE_CURSOR_INFO cursorInfo;
-                    GetConsoleCursorInfo(hConsole, &cursorInfo);
-                    BOOL originalCursorVisible = cursorInfo.bVisible;
-                    cursorInfo.bVisible = FALSE;
-                    SetConsoleCursorInfo(hConsole, &cursorInfo);
-                    
-                    // Move cursor to beginning of line
-                    SetConsoleCursorPosition(hConsole, promptEndPos);
-                    
-                    // Clear the line
-                    DWORD numCharsWritten;
-                    FillConsoleOutputCharacter(hConsole, ' ', 120, promptEndPos, &numCharsWritten);
-                    FillConsoleOutputAttribute(hConsole, originalAttributes, 120, promptEndPos, &numCharsWritten);
-                    
-                    // Copy original input to buffer
-                    strcpy(buffer, original_line);
-                    position = strlen(buffer);
-                    
-                    // Display the original input
-                    WriteConsole(hConsole, buffer, position, &numCharsWritten, NULL);
-                    
-                    // Show cursor again
-                    cursorInfo.bVisible = originalCursorVisible;
-                    SetConsoleCursorInfo(hConsole, &cursorInfo);
                 }
             }
         } else if (c == KEY_TAB) {
@@ -497,6 +678,7 @@ char *lsh_read_line(void) {
             tab_word_start = word_start;
             
             // Save original command line up to the word being completed
+            char original_input[LSH_RL_BUFSIZE];
             strncpy(original_input, buffer, word_start);
             original_input[word_start] = '\0';
             
@@ -565,98 +747,59 @@ char *lsh_read_line(void) {
             continue;
         } else if (isprint(c)) {
             // Regular printable character
-            
-            // If we're in history navigation mode, typing returns to original input first
-            if (history_navigation_index >= 0) {
-                history_navigation_index = -1;
-                
-                // Clear and restore original line
-                // Hide cursor to prevent flicker
-                CONSOLE_CURSOR_INFO cursorInfo;
-                GetConsoleCursorInfo(hConsole, &cursorInfo);
-                BOOL originalCursorVisible = cursorInfo.bVisible;
-                cursorInfo.bVisible = FALSE;
-                SetConsoleCursorInfo(hConsole, &cursorInfo);
-                
-                // Move cursor to beginning of line
-                SetConsoleCursorPosition(hConsole, promptEndPos);
-                
-                // Clear the line
-                DWORD numCharsWritten;
-                FillConsoleOutputCharacter(hConsole, ' ', 120, promptEndPos, &numCharsWritten);
-                FillConsoleOutputAttribute(hConsole, originalAttributes, 120, promptEndPos, &numCharsWritten);
-                
-                // Copy original input to buffer
-                strcpy(buffer, original_line);
-                position = strlen(buffer);
-                
-                // Display the original input
-                WriteConsole(hConsole, buffer, position, &numCharsWritten, NULL);
-                
-                // Show cursor again
-                cursorInfo.bVisible = originalCursorVisible;
-                SetConsoleCursorInfo(hConsole, &cursorInfo);
-            }
-            
-            // Special handling when tab cycling is active but user hasn't accepted a suggestion
-            if (tab_matches) {
-                // Hide cursor temporarily
-                CONSOLE_CURSOR_INFO cursorInfo;
-                GetConsoleCursorInfo(hConsole, &cursorInfo);
-                BOOL originalCursorVisible = cursorInfo.bVisible;
-                cursorInfo.bVisible = FALSE;
-                SetConsoleCursorInfo(hConsole, &cursorInfo);
-                
-                // Restore original input (what user typed before tab)
-                buffer[tab_word_start] = '\0';
-                strcat(buffer, last_tab_prefix);
-                position = tab_word_start + strlen(last_tab_prefix);
-                
-                // Clear the entire line
-                DWORD numCharsWritten;
-                FillConsoleOutputCharacter(hConsole, ' ', 120, promptEndPos, &numCharsWritten);
-                FillConsoleOutputAttribute(hConsole, originalAttributes, 120, promptEndPos, &numCharsWritten);
-                
-                // Move cursor to beginning of line
-                SetConsoleCursorPosition(hConsole, promptEndPos);
-                
-                // Redraw the original input
-                WriteConsole(hConsole, buffer, strlen(buffer), &numCharsWritten, NULL);
-                
-                // Now add the new character
+            if (position == strlen(buffer)) {
+                // Cursor at end of line - simple append
                 buffer[position] = c;
                 position++;
-                WriteConsole(hConsole, &c, 1, &numCharsWritten, NULL);
-                
-                // Clean up tab completion resources
-                for (int i = 0; i < tab_num_matches; i++) {
-                    free(tab_matches[i]);
-                }
-                free(tab_matches);
-                tab_matches = NULL;
-                tab_num_matches = 0;
-                tab_index = 0;
-                last_tab_prefix[0] = '\0';
-                
-                // Show cursor again
-                cursorInfo.bVisible = originalCursorVisible;
-                SetConsoleCursorInfo(hConsole, &cursorInfo);
+                buffer[position] = '\0';
+                putchar(c); // Echo character
             } else {
-                // Standard character handling when not in tab cycling mode
-                putchar(c);  // Echo character
+                // Cursor in middle of line - insert character
+                
+                // Get current cursor position
+                CONSOLE_SCREEN_BUFFER_INFO csbi;
+                GetConsoleScreenBufferInfo(hConsole, &csbi);
+                
+                // Hide cursor during update to prevent flicker
+                CONSOLE_CURSOR_INFO cursorInfo;
+                GetConsoleCursorInfo(hConsole, &cursorInfo);
+                BOOL originalCursorVisible = cursorInfo.bVisible;
+                cursorInfo.bVisible = FALSE;
+                SetConsoleCursorInfo(hConsole, &cursorInfo);
+                
+                // Make room in the buffer
+                memmove(buffer + position + 1, buffer + position, strlen(buffer) - position + 1);
                 buffer[position] = c;
+                
+                // Display the new character and text after it
+                printf("%c%s", c, buffer + position + 1);
+                
+                // Move cursor back to position right after the inserted char
                 position++;
+                COORD newPos = csbi.dwCursorPosition;
+                newPos.X = promptEndPos.X + position;
+                SetConsoleCursorPosition(hConsole, newPos);
+                
+                // Restore cursor visibility
+                cursorInfo.bVisible = originalCursorVisible;
+                SetConsoleCursorInfo(hConsole, &cursorInfo);
             }
             
             // Reset execution flag when editing
             ready_to_execute = 0;
             
+            // Exit history navigation mode if active
+            if (history_navigation_index >= 0) {
+                history_navigation_index = -1;
+            }
+            
             // Resize buffer if needed
-            if (position >= bufsize) {
+            if (position >= bufsize - 1) {
                 bufsize += LSH_RL_BUFSIZE;
                 buffer = realloc(buffer, bufsize);
                 if (!buffer) {
                     fprintf(stderr, "lsh: allocation error\n");
+                    SetConsoleMode(hStdin, oldMode);
                     exit(EXIT_FAILURE);
                 }
             }
@@ -664,6 +807,14 @@ char *lsh_read_line(void) {
         
         buffer[position] = '\0';  // Ensure null termination
     }
+    
+    // This should never be reached, but just in case
+    buffer[position] = '\0';
+    
+    // Restore original console mode
+    SetConsoleMode(hStdin, oldMode);
+    
+    return buffer;
 }
 
 /**
@@ -700,8 +851,6 @@ char **lsh_split_line(char *line) {
     tokens[position] = NULL;
     return tokens;
 }
-
-// Add after the existing line_reader.c functions
 
 /**
  * Split a line into commands separated by pipes

@@ -15,6 +15,9 @@ int main(int argc, char **argv) {
     UINT oldCP = GetConsoleOutputCP();
     SetConsoleOutputCP(65001);
     
+    // We don't need to modify console input mode here
+    // The line_reader.c will handle this temporarily during input
+    
     // Start the shell loop
     lsh_loop();
     
