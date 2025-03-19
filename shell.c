@@ -8,6 +8,7 @@
 #include "line_reader.h"
 #include "structured_data.h"
 #include "filters.h"
+#include "aliases.h"  // Added for alias support
 #include <time.h>  // Added for time functions
 
 
@@ -143,13 +144,40 @@ int lsh_launch(char **args) {
 }
 
 /**
- * Execute a command
+ * Execute a command (updated to handle aliases)
  */
 int lsh_execute(char **args) {
     int i;
     
     if (args[0] == NULL) {
         return 1;
+    }
+    
+    // Check if the command is an alias
+    AliasEntry *alias = find_alias(args[0]);
+    if (alias) {
+        // Create expanded command with the alias
+        char expanded_cmd[1024] = "";
+        strcpy(expanded_cmd, alias->command);
+        
+        // Add any arguments
+        for (i = 1; args[i] != NULL; i++) {
+            strcat(expanded_cmd, " ");
+            strcat(expanded_cmd, args[i]);
+        }
+        
+        // Parse the expanded command
+        char *expanded_copy = _strdup(expanded_cmd);
+        char **expanded_args = lsh_split_line(expanded_copy);
+        
+        // Execute the expanded command
+        int status = lsh_execute(expanded_args);
+        
+        // Clean up
+        free(expanded_copy);
+        free(expanded_args);
+        
+        return status;
     }
     
     // Check for builtin commands
@@ -255,7 +283,7 @@ void free_commands(char ***commands) {
 }
 
 /**
- * Main shell loop
+ * Main shell loop (updated for alias initialization)
  */
 void lsh_loop(void) {
     char *line;
@@ -264,6 +292,9 @@ void lsh_loop(void) {
     char cwd[1024];
     char prompt_path[1024];
     char username[256] = "Elden Lord";
+    
+    // Initialize aliases
+    init_aliases();
     
     // Display the welcome banner at startup
     display_welcome_banner();
@@ -330,4 +361,7 @@ void lsh_loop(void) {
         free_commands(commands);
         
     } while (status);
+    
+    // Clean up aliases on exit
+    cleanup_aliases();
 }

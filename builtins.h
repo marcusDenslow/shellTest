@@ -8,6 +8,7 @@
 
 #include "common.h"
 #include "structured_data.h"  // Add this include
+#include "aliases.h"          // Added for alias support
 
 // Syntax highlighting definitions
 #define COLOR_DEFAULT 7   // FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE
@@ -54,6 +55,10 @@ int lsh_paste(char **args);
 int lsh_move(char **args);
 int lsh_ps(char **args);
 int lsh_news(char **args);
+// Alias command declarations - added for alias support
+int lsh_alias(char **args);
+int lsh_unalias(char **args);
+int lsh_aliases(char **args);  // New command to display all aliases
 
 // Commands with structured output
 TableData* lsh_dir_structured(char **args);

@@ -82,6 +82,9 @@ char *builtin_str[] = {
 "mv",
 "ps",
 "news",
+"alias",      // Added for alias support
+"unalias",    // Added for alias support
+"aliases"     // New command to list all aliases
 };
 
 // Array of built-in command function pointers
@@ -108,12 +111,21 @@ int (*builtin_func[]) (char **) = {
 &lsh_move,
 &lsh_ps,
 &lsh_news,
+&lsh_alias,    // Added for alias support
+&lsh_unalias,  // Added for alias support
+&lsh_aliases,
 };
 
 // Return the number of built-in commands
 int lsh_num_builtins() {
 return sizeof(builtin_str) / sizeof(char *);
 }
+
+/**
+ * Command handler for the "aliases" command
+ * Simply displays all defined aliases
+ */
+
 
 // Add function to store commands in history with timestamps
 void lsh_add_to_history(const char *command) {
@@ -2369,7 +2381,6 @@ int lsh_paste(char **args) {
   printf("Pasted '%s' (%zu bytes)\n", copied_file_name, totalBytes);
   return 1;
 }
-
 
 int lsh_move(char **args) {
     if (args[1] == NULL || args[2] == NULL) {

@@ -5,6 +5,7 @@
 
 #include "tab_complete.h"
 #include "builtins.h"  // Added to access builtin_str[]
+#include "aliases.h"   // Added for alias support
 
 /**
  * Find matching files/directories or commands for tab completion
@@ -24,9 +25,43 @@ char **find_matches(const char *partial_text, int is_first_word, int *num_matche
         return NULL;
     }
     
-    // If it's the first word, try to match against commands first
+    // If it's the first word, try to match against aliases and commands first
     if (is_first_word) {
-        // Loop through all built-in commands
+        // First check aliases
+        int alias_match_count = 0;
+        char **alias_matches = get_alias_names(&alias_match_count);
+        
+        if (alias_matches && alias_match_count > 0) {
+            for (int i = 0; i < alias_match_count; i++) {
+                // Check if alias starts with the partial_text (case insensitive)
+                if (_strnicmp(alias_matches[i], partial_text, strlen(partial_text)) == 0) {
+                    // Add alias to matches
+                    if (*num_matches >= matches_capacity) {
+                        matches_capacity *= 2;
+                        matches = (char**)realloc(matches, sizeof(char*) * matches_capacity);
+                        if (!matches) {
+                            fprintf(stderr, "lsh: allocation error in tab completion\n");
+                            for (int j = 0; j < alias_match_count; j++) {
+                                free(alias_matches[j]);
+                            }
+                            free(alias_matches);
+                            return NULL;
+                        }
+                    }
+                    
+                    matches[*num_matches] = _strdup(alias_matches[i]);
+                    (*num_matches)++;
+                }
+            }
+            
+            // Clean up alias matches
+            for (int i = 0; i < alias_match_count; i++) {
+                free(alias_matches[i]);
+            }
+            free(alias_matches);
+        }
+        
+        // Then check built-in commands
         for (int i = 0; i < lsh_num_builtins(); i++) {
             // Check if command starts with the partial_text (case insensitive)
             if (_strnicmp(builtin_str[i], partial_text, strlen(partial_text)) == 0) {
@@ -45,7 +80,7 @@ char **find_matches(const char *partial_text, int is_first_word, int *num_matche
             }
         }
         
-        // If we found command matches, return them
+        // If we found matches, return them
         if (*num_matches > 0) {
             return matches;
         }
