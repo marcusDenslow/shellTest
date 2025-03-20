@@ -60,6 +60,13 @@ char *lsh_read_line(void) {
     // Save the initial cursor position (after prompt)
     COORD promptEndPos = consoleInfo.dwCursorPosition;
     
+    // Get console width
+    int console_width = 80; // Default
+    
+    if (GetConsoleScreenBufferInfo(hConsole, &consoleInfo)) {
+        console_width = consoleInfo.srWindow.Right - consoleInfo.srWindow.Left + 1;
+    }
+    
     // Set up the console for raw input
     HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
     DWORD oldMode;

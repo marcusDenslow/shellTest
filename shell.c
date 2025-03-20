@@ -3,13 +3,13 @@
  * Implementation of core shell functionality
  */
 
-#include "git_integration.h"
 #include "shell.h"
 #include "builtins.h"
 #include "line_reader.h"
 #include "structured_data.h"
 #include "filters.h"
 #include "aliases.h"  // Added for alias support
+#include "git_integration.h" // Added for Git repository detection
 #include <time.h>  // Added for time functions
 
 
@@ -283,13 +283,50 @@ void free_commands(char ***commands) {
     free(commands);
 }
 
-// Add this include at the top of shell.c with other includes:
-#include "git_integration.h"
-
-// Then modify the lsh_loop function where the prompt is generated:
+/**
+ * Get the name of the parent and current directories from a path
+ */
+void get_path_display(const char *cwd, char *parent_dir_name, char *current_dir_name, size_t buf_size) {
+    // Initialize output buffers
+    parent_dir_name[0] = '\0';
+    current_dir_name[0] = '\0';
+    
+    // Find the last directory separator
+    char *last_sep = strrchr(cwd, '\\');
+    
+    if (last_sep != NULL) {
+        // Get current directory name
+        strncpy(current_dir_name, last_sep + 1, buf_size - 1);
+        current_dir_name[buf_size - 1] = '\0'; // Ensure null termination
+        
+        // Save the position and temporarily cut the string
+        char temp = *last_sep;
+        *last_sep = '\0';
+        
+        // Find the parent directory
+        char *parent_sep = strrchr(cwd, '\\');
+        
+        if (parent_sep != NULL) {
+            // Parent directory exists, get its name
+            strncpy(parent_dir_name, parent_sep + 1, buf_size - 1);
+            parent_dir_name[buf_size - 1] = '\0'; // Ensure null termination
+        } else {
+            // The parent is the root, use the entire path up to last_sep
+            strncpy(parent_dir_name, cwd, buf_size - 1);
+            parent_dir_name[buf_size - 1] = '\0'; // Ensure null termination
+        }
+        
+        // Restore the path
+        *last_sep = temp;
+    } else {
+        // No backslash found, use the entire path as current directory
+        strncpy(current_dir_name, cwd, buf_size - 1);
+        current_dir_name[buf_size - 1] = '\0'; // Ensure null termination
+    }
+}
 
 /**
- * Main shell loop (updated with Git integration)
+ * Main shell loop (updated with right-aligned Git integration)
  */
 void lsh_loop(void) {
     char *line;
@@ -297,7 +334,17 @@ void lsh_loop(void) {
     int status;
     char cwd[1024];
     char prompt_path[1024];
+    char git_info[128] = "";
     char username[256] = "Elden Lord";
+    
+    // ANSI color codes for styling
+    const char *CYAN = "\033[36m";
+    const char *GREEN = "\033[32m";
+    const char *YELLOW = "\033[33m";
+    const char *BLUE = "\033[34m";
+    const char *PURPLE = "\033[35m";
+    const char *BRIGHT_PURPLE = "\033[95m";
+    const char *RESET = "\033[0m";
     
     // Initialize aliases
     init_aliases();
@@ -306,62 +353,100 @@ void lsh_loop(void) {
     display_welcome_banner();
     
     do {
+        // Clear git_info for this iteration
+        git_info[0] = '\0';
+        
         // Get current directory for the prompt
         if (_getcwd(cwd, sizeof(cwd)) == NULL) {
             perror("lsh");
             strcpy(prompt_path, "unknown_path"); // Fallback in case of error
         } else {
-            // Find the last directory in the path
-            char *last_dir = strrchr(cwd, '\\');
+            // Get parent and current directory names
+            char parent_dir[256] = "";
+            char current_dir[256] = "";
+            get_path_display(cwd, parent_dir, current_dir, sizeof(parent_dir));
             
-            if (last_dir != NULL) {
-                char last_dir_name[256];
-                strcpy(last_dir_name, last_dir + 1); // Save the last directory name
-                
-                *last_dir = '\0';  // Temporarily terminate string at last backslash
-                char *parent_dir = strrchr(cwd, '\\');
-                
-                // Check if we're in a Git repository
-                char git_branch[64] = "";
-                int is_dirty = 0;
-                int in_git_repo = get_git_branch(git_branch, sizeof(git_branch), &is_dirty);
-                
-                // Restore the backslash
-                *last_dir = '\\';
-                
-                if (parent_dir != NULL) {
-                    // We have at least two levels deep
-                    if (in_git_repo) {
-                        // Format with Git info - add the branch in square brackets and a * if dirty
-                        snprintf(prompt_path, sizeof(prompt_path), "%s in %s\\%s [%s%s]", 
-                                username, parent_dir + 1, last_dir_name, 
-                                git_branch, is_dirty ? "*" : "");
-                    } else {
-                        // Regular format without Git info
-                        snprintf(prompt_path, sizeof(prompt_path), "%s in %s\\%s", 
-                                username, parent_dir + 1, last_dir_name);
-                    }
-                } else {
-                    // We're at top level (like C:)
-                    if (in_git_repo) {
-                        // Format with Git info
-                        snprintf(prompt_path, sizeof(prompt_path), "%s in %s [%s%s]", 
-                                username, last_dir_name, 
-                                git_branch, is_dirty ? "*" : "");
-                    } else {
-                        // Regular format
-                        snprintf(prompt_path, sizeof(prompt_path), "%s in %s", 
-                                username, last_dir_name);
-                    }
-                }
+            // Check if we're in a Git repository
+            char git_branch[64] = "";
+            int is_dirty = 0;
+            int in_git_repo = get_git_branch(git_branch, sizeof(git_branch), &is_dirty);
+            
+            // Format prompt with username, parent and current directory
+            if (parent_dir[0] != '\0') {
+                snprintf(prompt_path, sizeof(prompt_path), "%s%s%s in %s%s\\%s%s", 
+                        CYAN, username, RESET,
+                        BLUE, parent_dir, current_dir, RESET);
             } else {
-                // No backslash found (rare case)
-                snprintf(prompt_path, sizeof(prompt_path), "%s in %s", username, cwd);
+                // If we don't have a parent directory, just show the current
+                snprintf(prompt_path, sizeof(prompt_path), "%s%s%s in %s%s%s", 
+                        CYAN, username, RESET,
+                        BLUE, current_dir, RESET);
+            }
+            
+            // Format Git info separately if in a repository
+            if (in_git_repo) {
+                // Use bright purple for dirty state, regular purple for clean
+                snprintf(git_info, sizeof(git_info), "%s\u2387 [%s%s]%s", 
+                        is_dirty ? BRIGHT_PURPLE : PURPLE, 
+                        git_branch, 
+                        is_dirty ? "*" : "", 
+                        RESET);
             }
         }
         
-        // Print prompt with username and shortened directory
+        // Get handle to console
+        HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+        
+        // Get console width
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        int console_width = 80; // Default
+        
+        if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+            console_width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        }
+        
+        // Calculate visible string lengths (without ANSI color codes)
+        int prompt_visible_length = strlen(prompt_path) - 20; // Approximate ANSI length adjustment
+        int git_visible_length = 0;
+        
+        if (git_info[0]) {
+            git_visible_length = strlen(git_info) - 10; // Approximate ANSI length adjustment
+            if (git_visible_length < 0) git_visible_length = 2; // Ensure minimum width with symbol
+        }
+        
+        // Print prompt (left part only)
         printf("%s -> ", prompt_path);
+        
+        // If we have Git info, display it on the right
+        if (git_info[0]) {
+            // Get current cursor position after the arrow
+            GetConsoleScreenBufferInfo(hConsole, &csbi);
+            COORD cursorPos = csbi.dwCursorPosition;
+            
+            // Save the cursor position for returning to later
+            COORD inputPos = cursorPos;
+            
+            // Calculate where to place the Git info (proper visual distance from cursor)
+            int arrow_length = 4; // Length of " -> "
+            int prompt_and_arrow = prompt_visible_length + arrow_length;
+            int available_width = console_width - prompt_and_arrow;
+            int min_space = 5; // Minimum space between cursor and git info
+            
+            // Ensure we have enough space for Git info and some padding
+            if (available_width > git_visible_length + min_space) {
+                // Move to the position for Git info
+                COORD gitPos;
+                gitPos.X = console_width - git_visible_length - 1; // -1 for safety
+                gitPos.Y = cursorPos.Y;
+                
+                // Print Git info at the new position
+                SetConsoleCursorPosition(hConsole, gitPos);
+                printf("%s", git_info);
+                
+                // Move cursor back to typing position
+                SetConsoleCursorPosition(hConsole, inputPos);
+            }
+        }
         
         line = lsh_read_line();
         
