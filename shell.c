@@ -327,7 +327,7 @@ void get_path_display(const char *cwd, char *parent_dir_name, char *current_dir_
 }
 
 /**
- * Main shell loop (updated with right-aligned Git integration)
+ * Main shell loop (updated with Git cache optimization)
  */
 void lsh_loop(void) {
     char *line;
@@ -337,6 +337,11 @@ void lsh_loop(void) {
     char prompt_path[1024];
     char git_info[128] = "";
     char username[256] = "Elden Lord";
+    
+    // Static variables to cache Git information
+    static char last_directory[1024] = "";
+    static char cached_git_info[128] = "";
+    static int cached_in_git_repo = 0;
     
     // ANSI color codes for styling
     const char *CYAN = "\033[36m";
@@ -361,17 +366,16 @@ void lsh_loop(void) {
         if (_getcwd(cwd, sizeof(cwd)) == NULL) {
             perror("lsh");
             strcpy(prompt_path, "unknown_path"); // Fallback in case of error
+            // Reset cached directory since we can't determine current directory
+            last_directory[0] = '\0';
         } else {
+            // Check if directory has changed since last prompt
+            int directory_changed = (strcmp(cwd, last_directory) != 0);
+            
             // Get parent and current directory names
             char parent_dir[256] = "";
             char current_dir[256] = "";
             get_path_display(cwd, parent_dir, current_dir, sizeof(parent_dir));
-            
-            // Check if we're in a Git repository
-            char git_branch[64] = "";
-            char git_repo[64] = "";
-            int is_dirty = 0;
-            int in_git_repo = get_git_branch(git_branch, sizeof(git_branch), &is_dirty);
             
             // Format prompt with username, parent and current directory
             if (parent_dir[0] != '\0') {
@@ -385,18 +389,42 @@ void lsh_loop(void) {
                         BLUE, current_dir, RESET);
             }
 
-            if (in_git_repo) {
-
-                int has_repo_name = get_git_repo_name(git_repo, sizeof(git_repo));
+            // Only check for Git repository if directory has changed
+            if (directory_changed) {
+                // Check if we're in a Git repository
+                char git_branch[64] = "";
+                char git_repo[64] = "";
+                int is_dirty = 0;
+                cached_in_git_repo = get_git_branch(git_branch, sizeof(git_branch), &is_dirty);
                 
-                if (has_repo_name) {
-                    snprintf(git_info, sizeof(git_info), "%s\u2387 %s [%s%s]%s", is_dirty ? BRIGHT_PURPLE : PURPLE, git_repo, git_branch, is_dirty ? "*" : "", RESET);
-                }else{
-                    snprintf(git_info, sizeof(git_info), "%s\u2387 [%s%s]%s", is_dirty ? BRIGHT_PURPLE : PURPLE, git_branch, is_dirty ? "*" : "", RESET);
+                // Clear cached Git info
+                cached_git_info[0] = '\0';
+                
+                if (cached_in_git_repo) {
+                    int has_repo_name = get_git_repo_name(git_repo, sizeof(git_repo));
+                    
+                    if (has_repo_name) {
+                        snprintf(cached_git_info, sizeof(cached_git_info), 
+                                "%s\u2387 %s [%s%s]%s", 
+                                is_dirty ? BRIGHT_PURPLE : PURPLE, 
+                                git_repo, git_branch, is_dirty ? "*" : "", RESET);
+                    } else {
+                        snprintf(cached_git_info, sizeof(cached_git_info), 
+                                "%s\u2387 [%s%s]%s", 
+                                is_dirty ? BRIGHT_PURPLE : PURPLE, 
+                                git_branch, is_dirty ? "*" : "", RESET);
+                    }
                 }
+                
+                // Update last directory
+                strcpy(last_directory, cwd);
             }
-        
-        } 
+            
+            // Use cached Git info
+            if (cached_in_git_repo) {
+                strcpy(git_info, cached_git_info);
+            }
+        }
        
         // Get handle to console
         HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
