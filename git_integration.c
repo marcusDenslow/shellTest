@@ -4,6 +4,8 @@
  */
 
 #include "git_integration.h"
+#include <stdio.h>
+#include <string.h>
 
 /**
  * Check if the current directory is in a Git repository and get branch info
@@ -95,5 +97,56 @@ int get_git_branch(char *branch_name, size_t buffer_size, int *is_dirty) {
         }
     }
     
+    return status;
+}
+
+/**
+ * Get the name of the Git repository from its directory
+ * 
+ * @param repo_name Buffer to store repository name if found
+ * @param buffer_size Size of the repo_name buffer
+ * @return 1 if successful, 0 otherwise
+ */
+int get_git_repo_name(char *repo_name, size_t buffer_size) {
+    char cmd[1024] = "";
+    FILE *fp;
+    int status = 0;
+    
+    // Initialize output parameter
+    if (repo_name && buffer_size > 0) {
+        repo_name[0] = '\0';
+    }
+    
+    // Get the path to the root of the Git repository
+    snprintf(cmd, sizeof(cmd), "git rev-parse --show-toplevel 2>nul");
+    fp = _popen(cmd, "r");
+    if (!fp) {
+        return 0;
+    }
+    
+    char git_dir[1024] = "";
+    if (fgets(git_dir, sizeof(git_dir), fp)) {
+        // Remove newline
+        size_t len = strlen(git_dir);
+        if (len > 0 && git_dir[len - 1] == '\n') {
+            git_dir[len - 1] = '\0';
+        }
+        
+        // First try backslash (Windows style)
+        char *last_sep = strrchr(git_dir, '\\');
+        
+        // If not found, try forward slash (Git/Unix style)
+        if (!last_sep) {
+            last_sep = strrchr(git_dir, '/');
+        }
+        
+        if (last_sep) {
+            strncpy(repo_name, last_sep + 1, buffer_size - 1);
+            repo_name[buffer_size - 1] = '\0';
+            status = 1;
+        }
+    }
+    
+    _pclose(fp);
     return status;
 }

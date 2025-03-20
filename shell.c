@@ -10,6 +10,7 @@
 #include "filters.h"
 #include "aliases.h"  // Added for alias support
 #include "git_integration.h" // Added for Git repository detection
+#include <stdio.h>
 #include <time.h>  // Added for time functions
 
 
@@ -368,6 +369,7 @@ void lsh_loop(void) {
             
             // Check if we're in a Git repository
             char git_branch[64] = "";
+            char git_repo[64] = "";
             int is_dirty = 0;
             int in_git_repo = get_git_branch(git_branch, sizeof(git_branch), &is_dirty);
             
@@ -382,18 +384,20 @@ void lsh_loop(void) {
                         CYAN, username, RESET,
                         BLUE, current_dir, RESET);
             }
-            
-            // Format Git info separately if in a repository
+
             if (in_git_repo) {
-                // Use bright purple for dirty state, regular purple for clean
-                snprintf(git_info, sizeof(git_info), "%s\u2387 [%s%s]%s", 
-                        is_dirty ? BRIGHT_PURPLE : PURPLE, 
-                        git_branch, 
-                        is_dirty ? "*" : "", 
-                        RESET);
+
+                int has_repo_name = get_git_repo_name(git_repo, sizeof(git_repo));
+                
+                if (has_repo_name) {
+                    snprintf(git_info, sizeof(git_info), "%s\u2387 %s [%s%s]%s", is_dirty ? BRIGHT_PURPLE : PURPLE, git_repo, git_branch, is_dirty ? "*" : "", RESET);
+                }else{
+                    snprintf(git_info, sizeof(git_info), "%s\u2387 [%s%s]%s", is_dirty ? BRIGHT_PURPLE : PURPLE, git_branch, is_dirty ? "*" : "", RESET);
+                }
             }
-        }
         
+        } 
+       
         // Get handle to console
         HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
         

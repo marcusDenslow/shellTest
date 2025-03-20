@@ -17,5 +17,6 @@
  * @return 1 if in a Git repo, 0 otherwise
  */
 int get_git_branch(char *branch_name, size_t buffer_size, int *is_dirty);
+int get_git_repo_name(char *repo_name, size_t buffer_size);
 
 #endif // GIT_INTEGRATION_H
