@@ -3,6 +3,7 @@
  * Implementation of core shell functionality
  */
 
+#include "git_integration.h"
 #include "shell.h"
 #include "builtins.h"
 #include "line_reader.h"
@@ -282,8 +283,13 @@ void free_commands(char ***commands) {
     free(commands);
 }
 
+// Add this include at the top of shell.c with other includes:
+#include "git_integration.h"
+
+// Then modify the lsh_loop function where the prompt is generated:
+
 /**
- * Main shell loop (updated for alias initialization)
+ * Main shell loop (updated with Git integration)
  */
 void lsh_loop(void) {
     char *line;
@@ -315,12 +321,38 @@ void lsh_loop(void) {
                 *last_dir = '\0';  // Temporarily terminate string at last backslash
                 char *parent_dir = strrchr(cwd, '\\');
                 
+                // Check if we're in a Git repository
+                char git_branch[64] = "";
+                int is_dirty = 0;
+                int in_git_repo = get_git_branch(git_branch, sizeof(git_branch), &is_dirty);
+                
+                // Restore the backslash
+                *last_dir = '\\';
+                
                 if (parent_dir != NULL) {
                     // We have at least two levels deep
-                    snprintf(prompt_path, sizeof(prompt_path), "%s in %s\\%s", username, parent_dir + 1, last_dir_name);
+                    if (in_git_repo) {
+                        // Format with Git info - add the branch in square brackets and a * if dirty
+                        snprintf(prompt_path, sizeof(prompt_path), "%s in %s\\%s [%s%s]", 
+                                username, parent_dir + 1, last_dir_name, 
+                                git_branch, is_dirty ? "*" : "");
+                    } else {
+                        // Regular format without Git info
+                        snprintf(prompt_path, sizeof(prompt_path), "%s in %s\\%s", 
+                                username, parent_dir + 1, last_dir_name);
+                    }
                 } else {
                     // We're at top level (like C:)
-                    snprintf(prompt_path, sizeof(prompt_path), "%s in %s", username, last_dir_name);
+                    if (in_git_repo) {
+                        // Format with Git info
+                        snprintf(prompt_path, sizeof(prompt_path), "%s in %s [%s%s]", 
+                                username, last_dir_name, 
+                                git_branch, is_dirty ? "*" : "");
+                    } else {
+                        // Regular format
+                        snprintf(prompt_path, sizeof(prompt_path), "%s in %s", 
+                                username, last_dir_name);
+                    }
                 }
             } else {
                 // No backslash found (rare case)
