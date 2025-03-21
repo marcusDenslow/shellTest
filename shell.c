@@ -13,6 +13,246 @@
 #include <stdio.h>
 #include <time.h>  // Added for time functions
 
+// Global variables for status bar
+static int g_console_width = 80;
+static int g_status_line = 0;
+static WORD g_normal_attributes = 0;
+static WORD g_status_attributes = 0;
+static BOOL g_status_bar_enabled = FALSE;  // Flag to track if status bar is enabled
+
+/**
+ * Temporarily hide the status bar before command execution
+ */
+void hide_status_bar(HANDLE hConsole) {
+    // Skip if status bar is not enabled
+    if (!g_status_bar_enabled) return;
+    
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+        return;
+    }
+    
+    // Save current cursor position
+    COORD cursorPos = csbi.dwCursorPosition;
+    
+    // Clear the status bar line
+    COORD statusPos = {0, csbi.srWindow.Bottom};
+    DWORD written;
+    FillConsoleOutputCharacter(hConsole, ' ', csbi.dwSize.X, statusPos, &written);
+    FillConsoleOutputAttribute(hConsole, g_normal_attributes, csbi.dwSize.X, statusPos, &written);
+    
+    // Restore cursor position
+    SetConsoleCursorPosition(hConsole, cursorPos);
+}
+
+/**
+ * This function scrolls the console buffer up one line to make room for the status bar
+ * when we're at the bottom of the screen.
+ */
+void ensure_status_bar_space(HANDLE hConsole) {
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+        return;
+    }
+    
+    // If cursor is on the bottom line (or second-to-last line), we need to scroll
+    if (csbi.dwCursorPosition.Y >= csbi.srWindow.Bottom - 1) {
+        // First clear the status bar if it exists
+        COORD statusPos = {0, csbi.srWindow.Bottom};
+        DWORD written;
+        FillConsoleOutputCharacter(hConsole, ' ', csbi.dwSize.X, statusPos, &written);
+        FillConsoleOutputAttribute(hConsole, g_normal_attributes, csbi.dwSize.X, statusPos, &written);
+        
+        // Create a small scroll rectangle - everything except the status bar line
+        SMALL_RECT scrollRect;
+        scrollRect.Left = 0;
+        scrollRect.Top = csbi.srWindow.Top;
+        scrollRect.Right = csbi.dwSize.X - 1;
+        scrollRect.Bottom = csbi.srWindow.Bottom - 1; // Exclude status bar line
+        
+        // The coordinate to move the rectangle to
+        COORD destOrigin;
+        destOrigin.X = 0;
+        destOrigin.Y = csbi.srWindow.Top - 1; // Move up one line
+        
+        // Fill character for the vacated lines
+        CHAR_INFO fill;
+        fill.Char.AsciiChar = ' ';
+        fill.Attributes = g_normal_attributes;
+        
+        // Scroll the window contents up
+        ScrollConsoleScreenBuffer(hConsole, &scrollRect, NULL, destOrigin, &fill);
+        
+        // Update cursor position
+        COORD newCursorPos;
+        newCursorPos.X = csbi.dwCursorPosition.X;
+        newCursorPos.Y = csbi.dwCursorPosition.Y - 1;
+        SetConsoleCursorPosition(hConsole, newCursorPos);
+    }
+}
+
+/**
+ * Check for console window resize and update status bar position
+ */
+void check_console_resize(HANDLE hConsole) {
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+        COORD oldStatusLine = {0, g_status_line};
+        int oldWidth = g_console_width;
+        
+        // Update dimensions
+        g_console_width = csbi.dwSize.X;
+        g_status_line = csbi.srWindow.Bottom;
+        
+        // If dimensions changed, we need to redraw status bar
+        if (oldStatusLine.Y != g_status_line || oldWidth != g_console_width) {
+            // Clear old status bar position if it's still visible
+            if (oldStatusLine.Y <= csbi.srWindow.Bottom && oldStatusLine.Y >= csbi.srWindow.Top) {
+                COORD cursorPos = csbi.dwCursorPosition;
+                
+                // Clear the old status line
+                SetConsoleCursorPosition(hConsole, oldStatusLine);
+                DWORD written;
+                FillConsoleOutputCharacter(hConsole, ' ', oldWidth, oldStatusLine, &written);
+                FillConsoleOutputAttribute(hConsole, g_normal_attributes, oldWidth, oldStatusLine, &written);
+                
+                // Restore cursor
+                SetConsoleCursorPosition(hConsole, cursorPos);
+            }
+        }
+    }
+}
+
+/**
+ * Update the status bar with Git information
+ */
+void update_status_bar(HANDLE hConsole, const char *git_info) {
+    // Skip if status bar is not enabled yet
+    if (!g_status_bar_enabled) return;
+    
+    // Check for resize
+    check_console_resize(hConsole);
+    
+    // Get current console information
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    GetConsoleScreenBufferInfo(hConsole, &csbi);
+    
+    // Save current cursor position
+    COORD cursorPos = csbi.dwCursorPosition;
+    
+    // Update console dimensions in case of resize
+    g_console_width = csbi.dwSize.X;
+    
+    // Always use the bottom line of the current console window
+    g_status_line = csbi.srWindow.Bottom;
+    
+    // Position cursor at beginning of status line (bottom line)
+    COORD statusPos = {0, g_status_line};
+    SetConsoleCursorPosition(hConsole, statusPos);
+    
+    // Set status bar color
+    SetConsoleTextAttribute(hConsole, g_status_attributes);
+    
+    // Clear the status bar with spaces
+    for (int i = 0; i < g_console_width; i++) {
+        putchar(' ');
+    }
+    
+    // Return to beginning of status line
+    statusPos.X = 0;
+    SetConsoleCursorPosition(hConsole, statusPos);
+    
+    // Draw Git information if available
+    if (git_info && git_info[0]) {
+        // Set text color to purple for Git info
+        WORD gitInfoColor = g_status_attributes | FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+        SetConsoleTextAttribute(hConsole, gitInfoColor);
+        
+        // Remove any ANSI color codes that might be in the string
+        char clean_git_info[256] = "";
+        int c_index = 0;
+        int in_ansi = 0;
+        
+        for (const char *p = git_info; *p; p++) {
+            if (*p == '\033') {
+                in_ansi = 1;
+                continue;
+            }
+            
+            if (in_ansi) {
+                if (*p == 'm') {
+                    in_ansi = 0;
+                }
+                continue;
+            }
+            
+            // Not in ANSI sequence, copy character
+            if (c_index < sizeof(clean_git_info) - 1) {
+                clean_git_info[c_index++] = *p;
+            }
+        }
+        clean_git_info[c_index] = '\0';
+        
+        // Print Git info
+        printf("%s", clean_git_info);
+    } else {
+        // Print default message when no Git info is available
+        printf(" Shell Status");
+    }
+    
+    // Reset text attributes
+    SetConsoleTextAttribute(hConsole, g_normal_attributes);
+    
+    // Restore original cursor position
+    SetConsoleCursorPosition(hConsole, cursorPos);
+}
+
+/**
+ * Initialize the status bar at the bottom of the screen
+ */
+int init_status_bar(HANDLE hConsole) {
+    // Get console information
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+        return 0;
+    }
+    
+    // Save normal attributes for later
+    g_normal_attributes = csbi.wAttributes;
+    
+    // Set status bar attributes (true black background)
+    g_status_attributes = 0; // Pure black background (no intensity)
+    
+    // Get console dimensions
+    g_console_width = csbi.dwSize.X;
+    g_status_line = csbi.srWindow.Bottom;
+    
+    // Save current cursor position
+    COORD cursorPos = csbi.dwCursorPosition;
+    
+    // Draw initial empty status bar
+    COORD statusPos = {0, g_status_line};
+    SetConsoleCursorPosition(hConsole, statusPos);
+    
+    // Set status bar color
+    SetConsoleTextAttribute(hConsole, g_status_attributes);
+    
+    // Fill the entire line with spaces for the status bar background
+    for (int i = 0; i < g_console_width; i++) {
+        putchar(' ');
+    }
+    
+    // Reset text attributes
+    SetConsoleTextAttribute(hConsole, g_normal_attributes);
+    
+    // Restore cursor position
+    SetConsoleCursorPosition(hConsole, cursorPos);
+    
+    // Mark status bar as enabled
+    g_status_bar_enabled = TRUE;
+    
+    return 1;
+}
 
 /**
  * Display a welcome banner with BBQ sauce invention time
@@ -112,7 +352,6 @@ void display_welcome_banner(void) {
     // Reset console attributes
     SetConsoleTextAttribute(hConsole, originalAttrs);
 }
-
 
 /**
  * Launch an external program
@@ -327,7 +566,7 @@ void get_path_display(const char *cwd, char *parent_dir_name, char *current_dir_
 }
 
 /**
- * Main shell loop (updated with Git cache optimization)
+ * Main shell loop (updated with fixed status bar)
  */
 void lsh_loop(void) {
     char *line;
@@ -352,15 +591,31 @@ void lsh_loop(void) {
     const char *BRIGHT_PURPLE = "\033[95m";
     const char *RESET = "\033[0m";
     
+    // Get handle to console
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    
     // Initialize aliases
     init_aliases();
     
     // Display the welcome banner at startup
     display_welcome_banner();
     
+    // Initialize the status bar 
+    init_status_bar(hConsole);
+    
     do {
         // Clear git_info for this iteration
         git_info[0] = '\0';
+        
+        // Always update the status bar with the current window dimensions
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+            g_status_line = csbi.srWindow.Bottom;
+            g_console_width = csbi.dwSize.X;
+            
+            // Check if we need to scroll to make room for the status bar
+            ensure_status_bar_space(hConsole);
+        }
         
         // Get current directory for the prompt
         if (_getcwd(cwd, sizeof(cwd)) == NULL) {
@@ -405,14 +660,12 @@ void lsh_loop(void) {
                     
                     if (has_repo_name) {
                         snprintf(cached_git_info, sizeof(cached_git_info), 
-                                "%s\u2387 %s [%s%s]%s", 
-                                is_dirty ? BRIGHT_PURPLE : PURPLE, 
-                                git_repo, git_branch, is_dirty ? "*" : "", RESET);
+                                "\u2387 %s [%s%s]", 
+                                git_repo, git_branch, is_dirty ? "*" : "");
                     } else {
                         snprintf(cached_git_info, sizeof(cached_git_info), 
-                                "%s\u2387 [%s%s]%s", 
-                                is_dirty ? BRIGHT_PURPLE : PURPLE, 
-                                git_branch, is_dirty ? "*" : "", RESET);
+                                "\u2387 [%s%s]", 
+                                git_branch, is_dirty ? "*" : "");
                     }
                 }
                 
@@ -425,60 +678,12 @@ void lsh_loop(void) {
                 strcpy(git_info, cached_git_info);
             }
         }
-       
-        // Get handle to console
-        HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-        
-        // Get console width
-        CONSOLE_SCREEN_BUFFER_INFO csbi;
-        int console_width = 80; // Default
-        
-        if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
-            console_width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
-        }
-        
-        // Calculate visible string lengths (without ANSI color codes)
-        int prompt_visible_length = strlen(prompt_path) - 20; // Approximate ANSI length adjustment
-        int git_visible_length = 0;
-        
-        if (git_info[0]) {
-            git_visible_length = strlen(git_info) - 10; // Approximate ANSI length adjustment
-            if (git_visible_length < 0) git_visible_length = 2; // Ensure minimum width with symbol
-        }
-        
+      
         // Print prompt (left part only)
         printf("%s -> ", prompt_path);
         
-        // If we have Git info, display it on the right
-        if (git_info[0]) {
-            // Get current cursor position after the arrow
-            GetConsoleScreenBufferInfo(hConsole, &csbi);
-            COORD cursorPos = csbi.dwCursorPosition;
-            
-            // Save the cursor position for returning to later
-            COORD inputPos = cursorPos;
-            
-            // Calculate where to place the Git info (proper visual distance from cursor)
-            int arrow_length = 4; // Length of " -> "
-            int prompt_and_arrow = prompt_visible_length + arrow_length;
-            int available_width = console_width - prompt_and_arrow;
-            int min_space = 5; // Minimum space between cursor and git info
-            
-            // Ensure we have enough space for Git info and some padding
-            if (available_width > git_visible_length + min_space) {
-                // Move to the position for Git info
-                COORD gitPos;
-                gitPos.X = console_width - git_visible_length - 1; // -1 for safety
-                gitPos.Y = cursorPos.Y;
-                
-                // Print Git info at the new position
-                SetConsoleCursorPosition(hConsole, gitPos);
-                printf("%s", git_info);
-                
-                // Move cursor back to typing position
-                SetConsoleCursorPosition(hConsole, inputPos);
-            }
-        }
+        // Update the status bar with Git info
+        update_status_bar(hConsole, git_info);
         
         line = lsh_read_line();
         
@@ -494,6 +699,9 @@ void lsh_loop(void) {
         int pipe_count = 0;
         while (commands[pipe_count] != NULL) pipe_count++;
         
+        // Hide status bar before command execution to prevent ghost duplicates
+        hide_status_bar(hConsole);
+        
         if (pipe_count > 1) {
             // Execute piped commands
             status = lsh_execute_piped(commands);
@@ -504,6 +712,9 @@ void lsh_loop(void) {
             // No commands (empty line)
             status = 1;
         }
+        
+        // Always redraw the status bar after command execution
+        update_status_bar(hConsole, git_info);
         
         // Clean up
         free(line);
