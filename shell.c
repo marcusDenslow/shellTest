@@ -255,6 +255,31 @@ int init_status_bar(HANDLE hConsole) {
 }
 
 /**
+ * Add padding above the status bar to avoid a cramped UI
+ * This ensures there's at least one blank line between output and prompt
+ */
+void add_padding_before_prompt(HANDLE hConsole) {
+    // Get current console information
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+        return;
+    }
+    
+    // Check if we need padding (if cursor is directly above status bar)
+    if (csbi.dwCursorPosition.Y == csbi.srWindow.Bottom - 1) {
+        // Add a newline to create space
+        printf("\n");
+        
+        // After adding newline, ensure status bar space again
+        // This will make sure we don't push the status bar off screen
+        ensure_status_bar_space(hConsole);
+        
+        // Update status bar position
+        check_console_resize(hConsole);
+    }
+}
+
+/**
  * Display a welcome banner with BBQ sauce invention time
  */
 void display_welcome_banner(void) {
@@ -566,7 +591,7 @@ void get_path_display(const char *cwd, char *parent_dir_name, char *current_dir_
 }
 
 /**
- * Main shell loop (updated with fixed status bar)
+ * Main shell loop (updated with fixed status bar and padding)
  */
 void lsh_loop(void) {
     char *line;
@@ -616,6 +641,9 @@ void lsh_loop(void) {
             // Check if we need to scroll to make room for the status bar
             ensure_status_bar_space(hConsole);
         }
+        
+        // Add padding to create space between output and prompt
+        add_padding_before_prompt(hConsole);
         
         // Get current directory for the prompt
         if (_getcwd(cwd, sizeof(cwd)) == NULL) {
