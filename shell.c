@@ -165,7 +165,7 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
     // Draw Git information if available
     if (git_info && git_info[0]) {
         // Set text color to purple for Git info
-        WORD gitInfoColor = g_status_attributes | FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+        WORD gitInfoColor = g_status_attributes | FOREGROUND_RED | FOREGROUND_INTENSITY;
         SetConsoleTextAttribute(hConsole, gitInfoColor);
         
         // Remove any ANSI color codes that might be in the string
