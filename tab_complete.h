@@ -9,6 +9,33 @@
 #include "common.h"
 
 /**
+ * Command context structure
+ */
+typedef struct {
+    int is_after_pipe;              // Flag if cursor is right after a pipe
+    int is_filter_command;          // Flag if current command is a filter command
+    char cmd_before_pipe[64];       // Command before the pipe
+    char filter_command[64];        // Current filter command
+    char current_token[1024];       // Current token being typed
+    int token_position;             // Position within current token
+    int token_index;                // Index of current token in command
+    int filter_arg_index;           // Argument index for filter command
+    int has_current_field;          // Flag if current field is set
+    int has_current_operator;       // Flag if current operator is set
+    char current_field[64];         // Current field if known
+    char current_operator[16];      // Current operator if known
+} CommandContext;
+
+/**
+ * Parse command context from a command line
+ * 
+ * @param line Command line to parse
+ * @param position Cursor position in the line
+ * @param ctx Pointer to store the parsed context
+ */
+void parse_command_context(const char *line, int position, CommandContext *ctx);
+
+/**
  * Find matching files/directories or commands for tab completion
  * 
  * @param partial_text The partial text to match
@@ -19,12 +46,43 @@
 char **find_matches(const char *partial_text, int is_first_word, int *num_matches);
 
 /**
+ * Find context-aware matches based on the current command line
+ * 
+ * @param buffer Current command buffer
+ * @param position Cursor position in the buffer
+ * @param partial_text Partial text to match
+ * @param num_matches Pointer to store number of matches found
+ * @return Array of matching strings (must be freed by caller)
+ */
+char **find_context_matches(const char *buffer, int position, const char *partial_text, 
+                           int *num_matches);
+
+/**
+ * Find context-aware suggestions based on the command hierarchy
+ * 
+ * @param line Command line
+ * @param position Cursor position in the line
+ * @param num_suggestions Pointer to store number of suggestions found
+ * @return Array of suggestion strings (must be freed by caller)
+ */
+char **find_context_suggestions(const char *line, int position, int *num_suggestions);
+
+/**
  * Find the best matching file/directory for current input
  * 
  * @param partial_text The partial text to match
  * @return Best matching string (must be freed by caller)
  */
 char* find_best_match(const char* partial_text);
+
+/**
+ * Find context-aware best match for current input
+ * 
+ * @param buffer Current command buffer
+ * @param position Cursor position in the buffer
+ * @return Best matching string (must be freed by caller)
+ */
+char* find_context_best_match(const char* buffer, int position);
 
 /**
  * Prepare an entire screen line in a buffer before displaying

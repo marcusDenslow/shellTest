@@ -1,11 +1,690 @@
 /**
  * tab_complete.c
- * Implementation of tab completion functionality
+ * Implementation of tab completion functionality with tuned command hierarchy
  */
 
 #include "tab_complete.h"
 #include "builtins.h"  // Added to access builtin_str[]
 #include "aliases.h"   // Added for alias support
+#include "filters.h"   // Added for filter commands
+#include "structured_data.h"  // Added for table header information
+
+// Define field types as constants
+#define FIELD_TYPE_NAME 0
+#define FIELD_TYPE_SIZE 1
+#define FIELD_TYPE_TYPE 2
+#define FIELD_TYPE_DATE 3
+#define FIELD_TYPE_PID 4
+#define FIELD_TYPE_MEMORY 5
+#define FIELD_TYPE_THREADS 6
+#define FIELD_TYPE_ANY 7
+
+// Define argument types as constants
+#define ARG_TYPE_FIELD 0
+#define ARG_TYPE_OPERATOR 1
+#define ARG_TYPE_VALUE 2
+#define ARG_TYPE_DIRECTION 3
+#define ARG_TYPE_PATTERN 4
+
+// Define these struct types:
+typedef struct {
+    char *command;             // Command name ("where", "sort-by", etc.)
+    int *arg_types;            // Array of argument types
+    int **valid_field_types;   // Valid field types for each argument position
+    int arg_count;             // Number of arguments
+} CommandDefinition;
+
+typedef struct {
+    char *command;          // Source command ("ls", "ps", etc.)
+    int *field_types;       // Array of field types
+    char **field_names;     // Array of field names
+    int field_count;        // Number of fields
+} CommandFields;
+
+// Global arrays for command definitions and field definitions
+static CommandDefinition command_defs[10]; // Allow up to 10 command definitions
+static int command_def_count = 0;
+static CommandFields field_defs[10]; // Allow up to 10 field source definitions
+static int field_def_count = 0;
+
+/**
+ * Initialize the command hierarchy definitions
+ * This is called when the shell starts
+ */
+void init_command_hierarchy() {
+    // Initialize field definitions for each source command
+    
+    // ls/dir command fields
+    static int ls_field_types[] = {
+        FIELD_TYPE_NAME, FIELD_TYPE_SIZE, FIELD_TYPE_TYPE, FIELD_TYPE_DATE
+    };
+    static char *ls_field_names[] = {
+        "Name", "Size", "Type", "Last Modified"
+    };
+    field_defs[field_def_count].command = "ls";
+    field_defs[field_def_count].field_types = ls_field_types;
+    field_defs[field_def_count].field_names = ls_field_names;
+    field_defs[field_def_count].field_count = sizeof(ls_field_types) / sizeof(ls_field_types[0]);
+    field_def_count++;
+    
+    // Use same field definitions for dir command
+    field_defs[field_def_count].command = "dir";
+    field_defs[field_def_count].field_types = ls_field_types;
+    field_defs[field_def_count].field_names = ls_field_names;
+    field_defs[field_def_count].field_count = sizeof(ls_field_types) / sizeof(ls_field_types[0]);
+    field_def_count++;
+    
+    // ps command fields
+    static int ps_field_types[] = {
+        FIELD_TYPE_PID, FIELD_TYPE_NAME, FIELD_TYPE_MEMORY, FIELD_TYPE_THREADS
+    };
+    static char *ps_field_names[] = {
+        "PID", "Name", "Memory", "Threads"
+    };
+    field_defs[field_def_count].command = "ps";
+    field_defs[field_def_count].field_types = ps_field_types;
+    field_defs[field_def_count].field_names = ps_field_names;
+    field_defs[field_def_count].field_count = sizeof(ps_field_types) / sizeof(ps_field_types[0]);
+    field_def_count++;
+    
+    // Initialize command definitions
+    
+    // where command definition - EXCLUDE Name field as specified
+    static int where_arg_types[] = {
+        ARG_TYPE_FIELD, ARG_TYPE_OPERATOR, ARG_TYPE_VALUE
+    };
+    // Define valid field types for 'where' command (Size, Type, Date) - NO Name
+    static int where_valid_fields_pos0[] = {
+        FIELD_TYPE_SIZE, FIELD_TYPE_TYPE, FIELD_TYPE_DATE,
+        FIELD_TYPE_PID, FIELD_TYPE_MEMORY, FIELD_TYPE_THREADS,
+        FIELD_TYPE_ANY
+    };
+    static int *where_field_types[] = {
+        where_valid_fields_pos0, NULL, NULL // Position 0 only needs field validation
+    };
+    command_defs[command_def_count].command = "where";
+    command_defs[command_def_count].arg_types = where_arg_types;
+    command_defs[command_def_count].valid_field_types = where_field_types;
+    command_defs[command_def_count].arg_count = sizeof(where_arg_types) / sizeof(where_arg_types[0]);
+    command_def_count++;
+    
+    // sort-by command definition
+    static int sort_by_arg_types[] = {
+        ARG_TYPE_FIELD, ARG_TYPE_DIRECTION
+    };
+    // Define valid field types for sort-by command
+    static int sort_by_valid_fields_pos0[] = {
+        FIELD_TYPE_NAME, FIELD_TYPE_SIZE, FIELD_TYPE_TYPE, FIELD_TYPE_DATE,
+        FIELD_TYPE_PID, FIELD_TYPE_MEMORY, FIELD_TYPE_THREADS,
+        FIELD_TYPE_ANY
+    };
+    static int *sort_by_field_types[] = {
+        sort_by_valid_fields_pos0, NULL // Position 0 only needs field validation
+    };
+    command_defs[command_def_count].command = "sort-by";
+    command_defs[command_def_count].arg_types = sort_by_arg_types;
+    command_defs[command_def_count].valid_field_types = sort_by_field_types;
+    command_defs[command_def_count].arg_count = sizeof(sort_by_arg_types) / sizeof(sort_by_arg_types[0]);
+    command_def_count++;
+    
+    // contains command definition - ONLY Name fields
+    static int contains_arg_types[] = {
+        ARG_TYPE_FIELD, ARG_TYPE_PATTERN
+    };
+    // Define valid field types for contains command - only name fields
+    static int contains_valid_fields_pos0[] = {
+        FIELD_TYPE_NAME, FIELD_TYPE_ANY
+    };
+    static int *contains_field_types[] = {
+        contains_valid_fields_pos0, NULL // Position 0 only needs field validation
+    };
+    command_defs[command_def_count].command = "contains";
+    command_defs[command_def_count].arg_types = contains_arg_types;
+    command_defs[command_def_count].valid_field_types = contains_field_types;
+    command_defs[command_def_count].arg_count = sizeof(contains_arg_types) / sizeof(contains_arg_types[0]);
+    command_def_count++;
+    
+    // select command definition - can take multiple fields
+    static int select_arg_types[] = {
+        ARG_TYPE_FIELD, ARG_TYPE_FIELD, ARG_TYPE_FIELD, ARG_TYPE_FIELD
+    };
+    // Define valid field types for select command - any field is valid
+    static int select_valid_fields_pos0[] = {
+        FIELD_TYPE_NAME, FIELD_TYPE_SIZE, FIELD_TYPE_TYPE, FIELD_TYPE_DATE,
+        FIELD_TYPE_PID, FIELD_TYPE_MEMORY, FIELD_TYPE_THREADS,
+        FIELD_TYPE_ANY
+    };
+    static int *select_field_types[] = {
+        select_valid_fields_pos0, select_valid_fields_pos0, 
+        select_valid_fields_pos0, select_valid_fields_pos0
+    };
+    command_defs[command_def_count].command = "select";
+    command_defs[command_def_count].arg_types = select_arg_types;
+    command_defs[command_def_count].valid_field_types = select_field_types;
+    command_defs[command_def_count].arg_count = sizeof(select_arg_types) / sizeof(select_arg_types[0]);
+    command_def_count++;
+    
+    // limit command definition
+    static int limit_arg_types[] = {
+        ARG_TYPE_VALUE // Simple number value
+    };
+    command_defs[command_def_count].command = "limit";
+    command_defs[command_def_count].arg_types = limit_arg_types;
+    command_defs[command_def_count].valid_field_types = NULL; // No field validation needed
+    command_defs[command_def_count].arg_count = sizeof(limit_arg_types) / sizeof(limit_arg_types[0]);
+    command_def_count++;
+}
+
+/**
+ * Find a command definition by name
+ */
+CommandDefinition *find_command_def(const char *command) {
+    for (int i = 0; i < command_def_count; i++) {
+        if (strcasecmp(command_defs[i].command, command) == 0) {
+            return &command_defs[i];
+        }
+    }
+    return NULL;
+}
+
+/**
+ * Find field definitions for a source command
+ */
+CommandFields *find_field_def(const char *command) {
+    for (int i = 0; i < field_def_count; i++) {
+        if (strcasecmp(field_defs[i].command, command) == 0) {
+            return &field_defs[i];
+        }
+    }
+    return NULL;
+}
+
+/**
+ * Get context-aware suggestions for commands after a pipe
+ * This returns filter commands that haven't been used yet
+ */
+char **get_pipe_suggestions(const char *cmd_before_pipe, char **used_commands, int used_count, int *num_suggestions) {
+    *num_suggestions = 0;
+    
+    // Default pipe suggestions are all filter commands
+    char **suggestions = (char**)malloc(filter_count * sizeof(char*));
+    if (!suggestions) {
+        fprintf(stderr, "lsh: allocation error in pipe suggestions\n");
+        return NULL;
+    }
+    
+    // Add filter commands that haven't been used yet - ensure lowercase
+    for (int i = 0; i < filter_count; i++) {
+        // Check if this command has already been used
+        int already_used = 0;
+        for (int j = 0; j < used_count; j++) {
+            if (strcasecmp(filter_str[i], used_commands[j]) == 0) {
+                already_used = 1;
+                break;
+            }
+        }
+        
+        if (!already_used) {
+            // Convert to lowercase to ensure consistency
+            char *cmd = _strdup(filter_str[i]);
+            if (cmd) {
+                for (char *p = cmd; *p; p++) {
+                    *p = tolower(*p);
+                }
+                suggestions[*num_suggestions] = cmd;
+                (*num_suggestions)++;
+            }
+        }
+    }
+    
+    return suggestions;
+}
+
+/**
+ * Get field suggestions for a specific filter command and source command
+ */
+char **get_field_suggestions(const char *cmd_before_pipe, const char *filter_cmd, 
+                            int arg_position, int *num_suggestions) {
+    *num_suggestions = 0;
+    
+    // Find the field definitions for the source command
+    CommandFields *fields = find_field_def(cmd_before_pipe);
+    if (!fields) {
+        // Use default fields if command not specifically defined
+        static char *default_fields[] = {"Name", "Size", "Type", "Date"};
+        int default_count = sizeof(default_fields) / sizeof(default_fields[0]);
+        
+        char **suggestions = (char**)malloc(default_count * sizeof(char*));
+        if (!suggestions) {
+            fprintf(stderr, "lsh: allocation error in field suggestions\n");
+            return NULL;
+        }
+        
+        for (int i = 0; i < default_count; i++) {
+            suggestions[*num_suggestions] = _strdup(default_fields[i]);
+            (*num_suggestions)++;
+        }
+        
+        return suggestions;
+    }
+    
+    // Find the command definition to check valid field types
+    CommandDefinition *cmd_def = find_command_def(filter_cmd);
+    if (!cmd_def || arg_position >= cmd_def->arg_count || 
+        cmd_def->arg_types[arg_position] != ARG_TYPE_FIELD) {
+        // Not a field position or unknown command
+        return NULL;
+    }
+    
+    // Check if this command has field type restrictions for this position
+    int *valid_types = NULL;
+    int valid_count = 0;
+    
+    if (cmd_def->valid_field_types && cmd_def->valid_field_types[arg_position]) {
+        valid_types = cmd_def->valid_field_types[arg_position];
+        // Count valid types
+        while (valid_types[valid_count] != FIELD_TYPE_ANY) {
+            valid_count++;
+        }
+    }
+    
+    // Allocate suggestions array for maximum possible size
+    char **suggestions = (char**)malloc(fields->field_count * sizeof(char*));
+    if (!suggestions) {
+        fprintf(stderr, "lsh: allocation error in field suggestions\n");
+        return NULL;
+    }
+    
+    // Add field suggestions that match the allowed types
+    for (int i = 0; i < fields->field_count; i++) {
+        if (!valid_types) {
+            // No restrictions, add all fields
+            suggestions[*num_suggestions] = _strdup(fields->field_names[i]);
+            (*num_suggestions)++;
+        } else {
+            // Check if this field's type is in the valid types list
+            int field_type = fields->field_types[i];
+            for (int j = 0; j < valid_count; j++) {
+                if (field_type == valid_types[j]) {
+                    suggestions[*num_suggestions] = _strdup(fields->field_names[i]);
+                    (*num_suggestions)++;
+                    break;
+                }
+            }
+        }
+    }
+    
+    return suggestions;
+}
+
+/**
+ * Get operator suggestions based on the field type
+ */
+char **get_operator_suggestions(const char *field, const char *cmd_before_pipe, int *num_suggestions) {
+    *num_suggestions = 0;
+    
+    // Find the field type
+    int field_type = FIELD_TYPE_ANY;
+    CommandFields *fields = find_field_def(cmd_before_pipe);
+    
+    if (fields) {
+        for (int i = 0; i < fields->field_count; i++) {
+            if (strcasecmp(fields->field_names[i], field) == 0) {
+                field_type = fields->field_types[i];
+                break;
+            }
+        }
+    }
+    
+    // Define operators based on field type
+    const char **operators;
+    int operator_count;
+    
+    if (field_type == FIELD_TYPE_SIZE || field_type == FIELD_TYPE_MEMORY || 
+        field_type == FIELD_TYPE_PID) {
+        // Numeric fields use all operators
+        static const char *numeric_ops[] = {">", "<", "==", ">=", "<="};
+        operators = numeric_ops;
+        operator_count = sizeof(numeric_ops) / sizeof(numeric_ops[0]);
+    } else if (field_type == FIELD_TYPE_NAME || field_type == FIELD_TYPE_TYPE) {
+        // String fields primarily use equality
+        static const char *string_ops[] = {"=="};
+        operators = string_ops;
+        operator_count = sizeof(string_ops) / sizeof(string_ops[0]);
+    } else {
+        // Default operators
+        static const char *default_ops[] = {">", "<", "==", ">=", "<="};
+        operators = default_ops;
+        operator_count = sizeof(default_ops) / sizeof(default_ops[0]);
+    }
+    
+    // Create suggestions
+    char **suggestions = (char**)malloc(operator_count * sizeof(char*));
+    if (!suggestions) {
+        fprintf(stderr, "lsh: allocation error in operator suggestions\n");
+        return NULL;
+    }
+    
+    for (int i = 0; i < operator_count; i++) {
+        suggestions[*num_suggestions] = _strdup(operators[i]);
+        (*num_suggestions)++;
+    }
+    
+    return suggestions;
+}
+
+/**
+ * Get value suggestions based on the field and operator
+ */
+char **get_value_suggestions(const char *field, const char *operator, const char *cmd_before_pipe, int *num_suggestions) {
+    *num_suggestions = 0;
+    
+    // Find the field type
+    int field_type = FIELD_TYPE_ANY;
+    CommandFields *fields = find_field_def(cmd_before_pipe);
+    
+    if (fields) {
+        for (int i = 0; i < fields->field_count; i++) {
+            if (strcasecmp(fields->field_names[i], field) == 0) {
+                field_type = fields->field_types[i];
+                break;
+            }
+        }
+    }
+    
+    // Define values based on field type
+    const char **values;
+    int value_count;
+    
+    if (field_type == FIELD_TYPE_SIZE || field_type == FIELD_TYPE_MEMORY) {
+        // Size field values
+        static const char *size_values[] = {
+            "1KB", "10KB", "100KB", "1MB", "10MB", "100MB", "1GB"
+        };
+        values = size_values;
+        value_count = sizeof(size_values) / sizeof(size_values[0]);
+    } else if (field_type == FIELD_TYPE_TYPE) {
+        // Type field values
+        static const char *type_values[] = {"File", "Directory"};
+        values = type_values;
+        value_count = sizeof(type_values) / sizeof(type_values[0]);
+    } else if (field_type == FIELD_TYPE_PID || field_type == FIELD_TYPE_THREADS) {
+        // Numeric field values
+        static const char *numeric_values[] = {"0", "1", "5", "10", "100", "1000"};
+        values = numeric_values;
+        value_count = sizeof(numeric_values) / sizeof(numeric_values[0]);
+    } else {
+        // Default empty values
+        static const char *empty_values[] = {""};
+        values = empty_values;
+        value_count = 0;
+    }
+    
+    // Create suggestions
+    char **suggestions = (char**)malloc((value_count > 0 ? value_count : 1) * sizeof(char*));
+    if (!suggestions) {
+        fprintf(stderr, "lsh: allocation error in value suggestions\n");
+        return NULL;
+    }
+    
+    for (int i = 0; i < value_count; i++) {
+        suggestions[*num_suggestions] = _strdup(values[i]);
+        (*num_suggestions)++;
+    }
+    
+    return suggestions;
+}
+
+/**
+ * Get direction suggestions (asc/desc)
+ */
+char **get_direction_suggestions(int *num_suggestions) {
+    *num_suggestions = 2;
+    
+    char **suggestions = (char**)malloc(2 * sizeof(char*));
+    if (!suggestions) {
+        fprintf(stderr, "lsh: allocation error in direction suggestions\n");
+        *num_suggestions = 0;
+        return NULL;
+    }
+    
+    suggestions[0] = _strdup("asc");
+    suggestions[1] = _strdup("desc");
+    
+    return suggestions;
+}
+
+/**
+ * Parse command tokens from a command line
+ */
+void parse_command_tokens(const char *line, int position, char ***tokens, int *token_count) {
+    *token_count = 0;
+    *tokens = NULL;
+    
+    if (!line || position <= 0) {
+        return;
+    }
+    
+    // Make a copy of the line up to the cursor position
+    char *partial_line = (char*)malloc((position + 1) * sizeof(char));
+    if (!partial_line) {
+        return;
+    }
+    
+    strncpy(partial_line, line, position);
+    partial_line[position] = '\0';
+    
+    // Count potential tokens
+    int max_tokens = 0;
+    const char *p = partial_line;
+    int in_token = 0;
+    
+    while (*p) {
+        if (*p == '|') {
+            if (in_token) {
+                max_tokens++;
+                in_token = 0;
+            }
+            // Count pipe as a token
+            max_tokens++;
+        } else if (isspace(*p)) {
+            if (in_token) {
+                max_tokens++;
+                in_token = 0;
+            }
+        } else if (!in_token) {
+            in_token = 1;
+        }
+        p++;
+    }
+    
+    // Add one for any potential token at cursor
+    if (in_token) {
+        max_tokens++;
+    }
+    
+    // Allocate token array
+    *tokens = (char**)malloc(max_tokens * sizeof(char*));
+    if (!(*tokens)) {
+        free(partial_line);
+        return;
+    }
+    
+    // Extract tokens
+    p = partial_line;
+    in_token = 0;
+    int token_start = 0;
+    
+    while (*p) {
+        if (*p == '|') {
+            if (in_token) {
+                // End the current token
+                int len = p - partial_line - token_start;
+                char *token = (char*)malloc((len + 1) * sizeof(char));
+                strncpy(token, partial_line + token_start, len);
+                token[len] = '\0';
+                (*tokens)[*token_count] = token;
+                (*token_count)++;
+                in_token = 0;
+            }
+            
+            // Add pipe as a token
+            char *pipe_token = (char*)malloc(2 * sizeof(char));
+            pipe_token[0] = '|';
+            pipe_token[1] = '\0';
+            (*tokens)[*token_count] = pipe_token;
+            (*token_count)++;
+        } else if (isspace(*p)) {
+            if (in_token) {
+                // End the current token
+                int len = p - partial_line - token_start;
+                char *token = (char*)malloc((len + 1) * sizeof(char));
+                strncpy(token, partial_line + token_start, len);
+                token[len] = '\0';
+                (*tokens)[*token_count] = token;
+                (*token_count)++;
+                in_token = 0;
+            }
+        } else if (!in_token) {
+            // Start a new token
+            token_start = p - partial_line;
+            in_token = 1;
+        }
+        p++;
+    }
+    
+    // Handle any final token
+    if (in_token) {
+        int len = p - partial_line - token_start;
+        char *token = (char*)malloc((len + 1) * sizeof(char));
+        strncpy(token, partial_line + token_start, len);
+        token[len] = '\0';
+        (*tokens)[*token_count] = token;
+        (*token_count)++;
+    }
+    
+    free(partial_line);
+}
+
+/**
+ * Parse command line to get context for suggestions with proper hierarchy awareness
+ */
+void parse_command_context(const char *line, int position, CommandContext *ctx) {
+    // Static initialization of command hierarchy
+    static int hierarchy_initialized = 0;
+    if (!hierarchy_initialized) {
+        init_command_hierarchy();
+        hierarchy_initialized = 1;
+    }
+    
+    // Initialize context
+    ctx->is_after_pipe = 0;
+    ctx->is_filter_command = 0;
+    ctx->cmd_before_pipe[0] = '\0';
+    ctx->current_token[0] = '\0';
+    ctx->token_position = 0;
+    ctx->token_index = 0;
+    ctx->filter_arg_index = 0;
+    ctx->has_current_field = 0;
+    ctx->has_current_operator = 0;
+    ctx->current_field[0] = '\0';
+    ctx->current_operator[0] = '\0';
+    
+    // Check for empty line
+    if (!line || position <= 0) {
+        return;
+    }
+    
+    // Extract tokens from the command line
+    char **tokens;
+    int token_count;
+    parse_command_tokens(line, position, &tokens, &token_count);
+    
+    if (!tokens || token_count == 0) {
+        return;
+    }
+    
+    // Find the last pipe and command before it
+    int last_pipe_idx = -1;
+    for (int i = 0; i < token_count; i++) {
+        if (strcmp(tokens[i], "|") == 0) {
+            last_pipe_idx = i;
+            
+            // Get command before pipe
+            if (i > 0 && tokens[i-1][0] != '|') {
+                strncpy(ctx->cmd_before_pipe, tokens[i-1], sizeof(ctx->cmd_before_pipe) - 1);
+                ctx->cmd_before_pipe[sizeof(ctx->cmd_before_pipe) - 1] = '\0';
+            }
+        }
+    }
+    
+    // Determine if cursor is right after a pipe
+    if (last_pipe_idx >= 0 && last_pipe_idx == token_count - 1) {
+        ctx->is_after_pipe = 1;
+    }
+    
+    // If not after pipe, check if in filter command
+    if (!ctx->is_after_pipe && last_pipe_idx >= 0 && last_pipe_idx < token_count - 1) {
+        // Check if token after pipe is a filter command
+        for (int i = 0; i < filter_count; i++) {
+            if (strcasecmp(tokens[last_pipe_idx + 1], filter_str[i]) == 0) {
+                ctx->is_filter_command = 1;
+                strncpy(ctx->filter_command, filter_str[i], sizeof(ctx->filter_command) - 1);
+                ctx->filter_command[sizeof(ctx->filter_command) - 1] = '\0';
+                
+                // Ensure filter command is lowercase
+                for (char *p = ctx->filter_command; *p; p++) {
+                    *p = tolower(*p);
+                }
+                
+                // Count arguments after filter command
+                int arg_count = 0;
+                for (int j = last_pipe_idx + 2; j < token_count; j++) {
+                    if (tokens[j][0] != '|') {
+                        arg_count++;
+                        
+                        // Store field and operator if available
+                        if (arg_count == 1) {
+                            ctx->has_current_field = 1;
+                            strncpy(ctx->current_field, tokens[j], sizeof(ctx->current_field) - 1);
+                            ctx->current_field[sizeof(ctx->current_field) - 1] = '\0';
+                        } else if (arg_count == 2) {
+                            ctx->has_current_operator = 1;
+                            strncpy(ctx->current_operator, tokens[j], sizeof(ctx->current_operator) - 1);
+                            ctx->current_operator[sizeof(ctx->current_operator) - 1] = '\0';
+                        }
+                    }
+                }
+                
+                ctx->filter_arg_index = arg_count;
+                break;
+            }
+        }
+    }
+    
+    // Extract the current token and its position
+    if (position > 0) {
+        int token_start = position - 1;
+        while (token_start >= 0 && !isspace(line[token_start]) && line[token_start] != '|') {
+            token_start--;
+        }
+        token_start++; // Move past space or pipe
+        
+        ctx->token_position = position - token_start;
+        if (token_start < position) {
+            strncpy(ctx->current_token, line + token_start, ctx->token_position);
+            ctx->current_token[ctx->token_position] = '\0';
+        }
+    }
+    
+    // Clean up
+    if (tokens) {
+        for (int i = 0; i < token_count; i++) {
+            free(tokens[i]);
+        }
+        free(tokens);
+    }
+}
 
 /**
  * Find matching files/directories or commands for tab completion
@@ -17,6 +696,10 @@ char **find_matches(const char *partial_text, int is_first_word, int *num_matche
     char **matches = NULL;
     int matches_capacity = 10;
     *num_matches = 0;
+    
+    if (!partial_text) {
+        return NULL;
+    }
     
     // Allocate initial array for matches
     matches = (char**)malloc(sizeof(char*) * matches_capacity);
@@ -149,6 +832,152 @@ char **find_matches(const char *partial_text, int is_first_word, int *num_matche
 }
 
 /**
+ * Find context-aware suggestions based on the command hierarchy
+ */
+char **find_context_suggestions(const char *line, int position, int *num_suggestions) {
+    CommandContext ctx;
+    parse_command_context(line, position, &ctx);
+    
+    *num_suggestions = 0;
+    
+    // Get used commands to avoid suggesting them again
+    char **tokens;
+    int token_count;
+    parse_command_tokens(line, position, &tokens, &token_count);
+    
+    char **used_commands = NULL;
+    int used_count = 0;
+    
+    if (tokens) {
+        // Count filter commands already used
+        for (int i = 0; i < token_count; i++) {
+            for (int j = 0; j < filter_count; j++) {
+                if (strcasecmp(tokens[i], filter_str[j]) == 0) {
+                    used_count++;
+                }
+            }
+        }
+        
+        // Collect used filter commands
+        if (used_count > 0) {
+            used_commands = (char**)malloc(used_count * sizeof(char*));
+            if (used_commands) {
+                used_count = 0;
+                
+                for (int i = 0; i < token_count; i++) {
+                    for (int j = 0; j < filter_count; j++) {
+                        if (strcasecmp(tokens[i], filter_str[j]) == 0) {
+                            used_commands[used_count++] = tokens[i];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Check if we're after a pipe
+    if (ctx.is_after_pipe) {
+        char **suggestions = get_pipe_suggestions(ctx.cmd_before_pipe, used_commands, used_count, num_suggestions);
+        
+        // Clean up
+        if (tokens) {
+            for (int i = 0; i < token_count; i++) {
+                free(tokens[i]);
+            }
+            free(tokens);
+        }
+        if (used_commands) {
+            free(used_commands);
+        }
+        
+        return suggestions;
+    }
+    
+    // Clean up tokens as we don't need them anymore
+    if (tokens) {
+        for (int i = 0; i < token_count; i++) {
+            free(tokens[i]);
+        }
+        free(tokens);
+    }
+    if (used_commands) {
+        free(used_commands);
+    }
+    
+    // Check if we're in a filter command
+    if (ctx.is_filter_command) {
+        // Find command definition
+        CommandDefinition *cmd_def = find_command_def(ctx.filter_command);
+        if (!cmd_def || ctx.filter_arg_index >= cmd_def->arg_count) {
+            return NULL;
+        }
+        
+        // Determine suggestion type based on command definition
+        int arg_type = cmd_def->arg_types[ctx.filter_arg_index];
+        
+        switch (arg_type) {
+            case ARG_TYPE_FIELD:
+                return get_field_suggestions(ctx.cmd_before_pipe, ctx.filter_command, 
+                                            ctx.filter_arg_index, num_suggestions);
+                
+            case ARG_TYPE_OPERATOR:
+                return get_operator_suggestions(ctx.current_field, ctx.cmd_before_pipe, num_suggestions);
+                
+            case ARG_TYPE_VALUE:
+                return get_value_suggestions(ctx.current_field, ctx.current_operator, 
+                                           ctx.cmd_before_pipe, num_suggestions);
+                
+            case ARG_TYPE_DIRECTION:
+                return get_direction_suggestions(num_suggestions);
+                
+            case ARG_TYPE_PATTERN:
+                // Pattern is free-form text, so no specific suggestions
+                return NULL;
+        }
+    }
+    
+    // Default - suggest based on partial text
+    return find_matches(ctx.current_token, ctx.token_index == 0, num_suggestions);
+}
+
+/**
+ * Find context-aware matches based on the current command line
+ */
+char **find_context_matches(const char *buffer, int position, const char *partial_text, int *num_matches) {
+    char **suggestions = find_context_suggestions(buffer, position, num_matches);
+    
+    // Filter suggestions based on partial_text if provided
+    if (suggestions && *num_matches > 0 && partial_text && *partial_text) {
+        int match_count = 0;
+        for (int i = 0; i < *num_matches; i++) {
+            if (_strnicmp(suggestions[i], partial_text, strlen(partial_text)) == 0) {
+                // Move matching suggestions to the beginning
+                if (i != match_count) {
+                    char *temp = suggestions[match_count];
+                    suggestions[match_count] = suggestions[i];
+                    suggestions[i] = temp;
+                }
+                match_count++;
+            } else {
+                // Free non-matching suggestions
+                free(suggestions[i]);
+                suggestions[i] = NULL;
+            }
+        }
+        
+        // Update num_matches
+        *num_matches = match_count;
+        
+        if (match_count == 0) {
+            free(suggestions);
+            suggestions = NULL;
+        }
+    }
+    
+    return suggestions;
+}
+
+/**
  * Find the best match for current input
  */
 char* find_best_match(const char* partial_text) {
@@ -209,6 +1038,77 @@ char* find_best_match(const char* partial_text) {
 }
 
 /**
+ * Find context-aware best match for current input
+ */
+char* find_context_best_match(const char* buffer, int position) {
+    // If empty buffer, nothing to suggest
+    if (position == 0) return NULL;
+    
+    // Find context-aware suggestions
+    int num_suggestions;
+    char **suggestions = find_context_suggestions(buffer, position, &num_suggestions);
+    
+    if (suggestions && num_suggestions > 0) {
+        // Find the start of the current word
+        int word_start = position - 1;
+        while (word_start >= 0 && !isspace(buffer[word_start]) && buffer[word_start] != '|') {
+            word_start--;
+        }
+        word_start++; // Move past the space or pipe
+        
+        // Extract the current partial word
+        char partial_word[1024] = "";
+        strncpy(partial_word, buffer + word_start, position - word_start);
+        partial_word[position - word_start] = '\0';
+        
+        // Find the best match (case insensitive)
+        char *best_match = NULL;
+        for (int i = 0; i < num_suggestions; i++) {
+            if (_strnicmp(suggestions[i], partial_word, strlen(partial_word)) == 0) {
+                best_match = suggestions[i];
+                break;
+            }
+        }
+        
+        if (best_match) {
+            // Create the full suggestion
+            char* full_suggestion = (char*)malloc(position + strlen(best_match) - strlen(partial_word) + 1);
+            if (!full_suggestion) {
+                for (int i = 0; i < num_suggestions; i++) {
+                    free(suggestions[i]);
+                }
+                free(suggestions);
+                return NULL;
+            }
+            
+            // Copy everything before the current word
+            strncpy(full_suggestion, buffer, word_start);
+            full_suggestion[word_start] = '\0';
+            
+            // Append the best match
+            strcat(full_suggestion, best_match);
+            
+            // Free suggestions array
+            for (int i = 0; i < num_suggestions; i++) {
+                free(suggestions[i]);
+            }
+            free(suggestions);
+            
+            return full_suggestion;
+        }
+        
+        // Free suggestions if no match found
+        for (int i = 0; i < num_suggestions; i++) {
+            free(suggestions[i]);
+        }
+        free(suggestions);
+    }
+    
+    // Fall back to the original match finding logic
+    return find_best_match(buffer);
+}
+
+/**
  * Prepare an entire screen line in a buffer before displaying
  */
 void prepare_display_buffer(char *displayBuffer, const char *original_line, 
@@ -253,8 +1153,6 @@ void redraw_tab_suggestion(HANDLE hConsole, COORD promptEndPos,
     
     // Calculate where to position the cursor after displaying
     int prefixLen = strlen(last_tab_prefix);
-    // Remove unused variable
-    // int cursorPos = strlen(original_line) + strlen(tab_match);
     
     // Hide cursor during redraw to prevent flicker
     CONSOLE_CURSOR_INFO cursorInfo;
@@ -318,10 +1216,10 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos, const ch
     
     // Find the start of the current word
     int word_start = position - 1;
-    while (word_start >= 0 && buffer[word_start] != ' ' && buffer[word_start] != '\\') {
+    while (word_start >= 0 && buffer[word_start] != ' ' && buffer[word_start] != '\\' && buffer[word_start] != '|') {
         word_start--;
     }
-    word_start++; // Move past the space or backslash
+    word_start++; // Move past the space, backslash, or pipe
     
     // Extract just the last word from the suggested path
     const char *lastWord = strrchr(suggestion, ' ');

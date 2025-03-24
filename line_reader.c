@@ -1,6 +1,6 @@
 /**
  * line_reader.c
- * Implementation of line reading and parsing
+ * Implementation of line reading and parsing with context-aware suggestions
  */
 
 #include "line_reader.h"
@@ -14,7 +14,7 @@
 #define KEY_ESCAPE 27
 
 /**
- * Read a line of input from the user with tab completion
+ * Read a line of input from the user with context-aware tab completion
  */
 char *lsh_read_line(void) {
     // Allocate buffer for the input
@@ -113,19 +113,23 @@ char *lsh_read_line(void) {
         // Find and display new suggestion only if we're not in tab cycling mode
         if (!tab_matches && !ready_to_execute && position == strlen(buffer)) {
             buffer[position] = '\0';  // Ensure buffer is null-terminated
-            suggestion = find_best_match(buffer);
+            
+            // Use context-aware best match finding
+            suggestion = find_context_best_match(buffer, position);
+            
             if (suggestion) {
                 // Get current cursor position
                 GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
-                // Calculate the start of the current word
+                
+                // Find the start of the current word
                 int word_start = position - 1;
-                while (word_start >= 0 && buffer[word_start] != ' ' && buffer[word_start] != '\\') {
+                while (word_start >= 0 && buffer[word_start] != ' ' && buffer[word_start] != '\\' && buffer[word_start] != '|') {
                     word_start--;
                 }
-                word_start++; // Move past the space or backslash
+                word_start++; // Move past the space, backslash, or pipe
                 
                 // Extract just the last word from the suggested path
-                char *lastWord = strrchr(suggestion, ' ');
+                const char *lastWord = strrchr(suggestion, ' ');
                 if (lastWord) {
                     lastWord++; // Move past the space
                 } else {
@@ -428,10 +432,10 @@ char *lsh_read_line(void) {
             else if (showing_suggestion && suggestion) {
                 // Find the start of the current word
                 int word_start = position - 1;
-                while (word_start >= 0 && buffer[word_start] != ' ' && buffer[word_start] != '\\') {
+                while (word_start >= 0 && buffer[word_start] != ' ' && buffer[word_start] != '\\' && buffer[word_start] != '|') {
                     word_start--;
                 }
-                word_start++; // Move past the space or backslash
+                word_start++; // Move past the space, backslash, or pipe
                 
                 // Extract just the last word from the suggested path
                 char *lastWord = strrchr(suggestion, ' ');
@@ -672,12 +676,12 @@ char *lsh_read_line(void) {
                 }
             }
         } else if (c == KEY_TAB) {
-            // User pressed Tab - activate completion
+            // User pressed Tab - activate completion with context-aware suggestions
             buffer[position] = '\0';  // Ensure null termination
             
             // Find the start of the current word
             int word_start = position;
-            while (word_start > 0 && buffer[word_start - 1] != ' ' && buffer[word_start - 1] != '\\') {
+            while (word_start > 0 && buffer[word_start - 1] != ' ' && buffer[word_start - 1] != '\\' && buffer[word_start - 1] != '|') {
                 word_start--;
             }
             
@@ -710,8 +714,8 @@ char *lsh_read_line(void) {
                 // Check if this is the first word (command)
                 int is_first_word = (tab_word_start == 0);
                 
-                // Find matches for the new prefix
-                tab_matches = find_matches(partial_path, is_first_word, &tab_num_matches);
+                // Find context-aware matches for the new prefix
+                tab_matches = find_context_matches(buffer, position, partial_path, &tab_num_matches);
                 
                 // If no matches, don't do anything
                 if (!tab_matches || tab_num_matches == 0) {
