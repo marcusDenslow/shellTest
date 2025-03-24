@@ -135,7 +135,9 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
     
     // Get current console information
     CONSOLE_SCREEN_BUFFER_INFO csbi;
-    GetConsoleScreenBufferInfo(hConsole, &csbi);
+    if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+        return; // Can't proceed without console info
+    }
     
     // Save current cursor position
     COORD cursorPos = csbi.dwCursorPosition;
@@ -146,29 +148,24 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
     // Always use the bottom line of the current console window
     g_status_line = csbi.srWindow.Bottom;
     
+    // Hide cursor during the update
+    CONSOLE_CURSOR_INFO cursorInfo;
+    GetConsoleCursorInfo(hConsole, &cursorInfo);
+    BOOL originalCursorVisible = cursorInfo.bVisible;
+    cursorInfo.bVisible = FALSE;
+    SetConsoleCursorInfo(hConsole, &cursorInfo);
+    
     // Position cursor at beginning of status line (bottom line)
     COORD statusPos = {0, g_status_line};
-    SetConsoleCursorPosition(hConsole, statusPos);
     
-    // Set status bar color
-    SetConsoleTextAttribute(hConsole, g_status_attributes);
+    // Clear the status bar in one operation
+    DWORD charsWritten;
+    FillConsoleOutputCharacter(hConsole, ' ', g_console_width, statusPos, &charsWritten);
+    FillConsoleOutputAttribute(hConsole, g_status_attributes, g_console_width, statusPos, &charsWritten);
     
-    // Clear the status bar with spaces
-    for (int i = 0; i < g_console_width; i++) {
-        putchar(' ');
-    }
-    
-    // Return to beginning of status line
-    statusPos.X = 0;
-    SetConsoleCursorPosition(hConsole, statusPos);
-    
-    // Draw Git information if available
+    // If we have Git info to display
     if (git_info && git_info[0]) {
-        // Set text color to purple for Git info
-        WORD gitInfoColor = g_status_attributes | FOREGROUND_RED | FOREGROUND_INTENSITY;
-        SetConsoleTextAttribute(hConsole, gitInfoColor);
-        
-        // Remove any ANSI color codes that might be in the string
+        // Prepare clean git info (strip ANSI color codes if any)
         char clean_git_info[256] = "";
         int c_index = 0;
         int in_ansi = 0;
@@ -193,19 +190,48 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
         }
         clean_git_info[c_index] = '\0';
         
-        // Print Git info
-        printf("%s", clean_git_info);
+        // Set text color for Git info (purple)
+        WORD gitInfoColor = g_status_attributes | FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+        
+        // Write Git info directly to the console buffer with attributes
+        WriteConsoleOutputCharacter(
+            hConsole,
+            clean_git_info,
+            strlen(clean_git_info),
+            statusPos,
+            &charsWritten
+        );
+        
+        // Set the attributes for the written characters
+        DWORD length = strlen(clean_git_info);
+        COORD attrPos = statusPos;
+        FillConsoleOutputAttribute(
+            hConsole,
+            gitInfoColor,
+            length,
+            attrPos,
+            &charsWritten
+        );
     } else {
-        // Print default message when no Git info is available
-        printf(" Shell Status");
+        // Default message when no Git info is available
+        const char *defaultMsg = " Shell Status";
+        WriteConsoleOutputCharacter(
+            hConsole,
+            defaultMsg,
+            strlen(defaultMsg),
+            statusPos,
+            &charsWritten
+        );
     }
-    
-    // Reset text attributes
-    SetConsoleTextAttribute(hConsole, g_normal_attributes);
     
     // Restore original cursor position
     SetConsoleCursorPosition(hConsole, cursorPos);
+    
+    // Restore cursor visibility
+    cursorInfo.bVisible = originalCursorVisible;
+    SetConsoleCursorInfo(hConsole, &cursorInfo);
 }
+
 
 /**
  * Initialize the status bar at the bottom of the screen
@@ -591,7 +617,7 @@ void get_path_display(const char *cwd, char *parent_dir_name, char *current_dir_
 }
 
 /**
- * Main shell loop (updated with fixed status bar and padding)
+ * Main shell loop (updated to fix Git info updates)
  */
 void lsh_loop(void) {
     char *line;
@@ -642,9 +668,6 @@ void lsh_loop(void) {
             ensure_status_bar_space(hConsole);
         }
         
-        // Add padding to create space between output and prompt
-        add_padding_before_prompt(hConsole);
-        
         // Get current directory for the prompt
         if (_getcwd(cwd, sizeof(cwd)) == NULL) {
             perror("lsh");
@@ -672,16 +695,27 @@ void lsh_loop(void) {
                         BLUE, current_dir, RESET);
             }
 
-            // Only check for Git repository if directory has changed
+            // Print prompt immediately
+            printf("%s -> ", prompt_path);
+            fflush(stdout);
+            
+            // Update the status bar initially without Git info
+            update_status_bar(hConsole, "");
+            
+            // Check for Git info if directory has changed
             if (directory_changed) {
+                // Update last directory
+                strcpy(last_directory, cwd);
+                
+                // Clear cached Git info
+                cached_git_info[0] = '\0';
+                cached_in_git_repo = 0;
+                
                 // Check if we're in a Git repository
                 char git_branch[64] = "";
                 char git_repo[64] = "";
                 int is_dirty = 0;
                 cached_in_git_repo = get_git_branch(git_branch, sizeof(git_branch), &is_dirty);
-                
-                // Clear cached Git info
-                cached_git_info[0] = '\0';
                 
                 if (cached_in_git_repo) {
                     int has_repo_name = get_git_repo_name(git_repo, sizeof(git_repo));
@@ -696,23 +730,20 @@ void lsh_loop(void) {
                                 git_branch, is_dirty ? "*" : "");
                     }
                 }
-                
-                // Update last directory
-                strcpy(last_directory, cwd);
             }
             
-            // Use cached Git info
+            // Use cached Git info (will be empty if not in a repo)
             if (cached_in_git_repo) {
                 strcpy(git_info, cached_git_info);
             }
+            
+            // Update status bar with Git info (if any)
+            if (git_info[0] != '\0') {
+                update_status_bar(hConsole, git_info);
+            }
         }
-      
-        // Print prompt (left part only)
-        printf("%s -> ", prompt_path);
         
-        // Update the status bar with Git info
-        update_status_bar(hConsole, git_info);
-        
+        // Read user input
         line = lsh_read_line();
         
         // Add command to history if not empty
@@ -753,5 +784,3 @@ void lsh_loop(void) {
     // Clean up aliases on exit
     cleanup_aliases();
 }
-
-
