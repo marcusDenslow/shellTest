@@ -89,6 +89,7 @@ int try_bookmark_completion(char *buffer, int position, HANDLE hConsole,
 
 /**
  * Read a line of input from the user with context-aware tab completion
+ * Modified to fix suggestion behavior with Enter key
  */
 char *lsh_read_line(void) {
   // Allocate buffer for the input
@@ -443,7 +444,8 @@ char *lsh_read_line(void) {
         SetConsoleMode(hStdin, oldMode);
         return buffer;
       }
-      // If we're in tab cycling mode, accept the current suggestion
+      // If we're in tab cycling mode, accept the current suggestion but don't
+      // execute
       else if (tab_matches) {
         // Tab cycling is active - accept the current suggestion but don't
         // execute Find the start of the current word
@@ -511,85 +513,18 @@ char *lsh_read_line(void) {
         // Continue editing - don't submit yet
         continue;
       }
-      // Otherwise, if we have a suggestion showing, accept it
-      else if (showing_suggestion && suggestion) {
-        // Find the start of the current word
-        int word_start = position - 1;
-        while (word_start >= 0 && buffer[word_start] != ' ' &&
-               buffer[word_start] != '\\' && buffer[word_start] != '|') {
-          word_start--;
-        }
-        word_start++; // Move past the space, backslash, or pipe
-
-        // Extract just the last word from the suggested path
-        char *lastWord = strrchr(suggestion, ' ');
-        if (lastWord) {
-          lastWord++; // Move past the space
-        } else {
-          lastWord = suggestion;
-        }
-
-        // Extract just the last word from what we've typed so far
-        char currentWord[1024] = "";
-        strncpy(currentWord, buffer + word_start, position - word_start);
-        currentWord[position - word_start] = '\0';
-
-        // Check if the user has already completely typed the suggestion (case
-        // insensitive)
-        if (_stricmp(currentWord, lastWord) == 0) {
-          // User has already typed the complete suggestion, execute immediately
-          putchar('\n'); // Echo newline
-          buffer[position] = '\0';
-          free(suggestion);
-          suggestion = NULL;
-          showing_suggestion = 0;
-
-          // Restore original console mode
-          SetConsoleMode(hStdin, oldMode);
-          return buffer;
-        }
-
-        // Get current cursor position
-        GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
-
-        // Print the remainder of the suggestion in normal color
-        printf("%s", lastWord + strlen(currentWord));
-
-        // Update buffer with the suggestion
-        // Keep the prefix (everything before the current word)
-        char tempBuffer[1024] = "";
-        strncpy(tempBuffer, buffer, word_start);
-        tempBuffer[word_start] = '\0';
-
-        // Add the completed word
-        strcat(tempBuffer, lastWord);
-
-        // Copy back to buffer
-        strcpy(buffer, tempBuffer);
-        position = strlen(buffer);
-
-        // Set flag to execute on next Enter
-        ready_to_execute = 1;
-
-        // Continue editing - don't submit yet
-        free(suggestion);
-        suggestion = NULL;
-        showing_suggestion = 0;
-        continue;
-      }
-      // No tab cycling or suggestion - submit the command
+      // Just submit the command as typed - ignore suggestions unless explicitly
+      // accepted
       else {
         putchar('\n'); // Echo newline
         buffer[position] = '\0';
 
-        // REMOVED: This line was causing duplicate history entries
-        // if (buffer[0] != '\0') {
-        //     lsh_add_to_history(buffer);
-        // }
-
         // Clean up
-        if (suggestion)
+        if (suggestion) {
           free(suggestion);
+          suggestion = NULL;
+        }
+        showing_suggestion = 0;
 
         // Clean up tab completion resources
         if (tab_matches) {
@@ -830,16 +765,8 @@ char *lsh_read_line(void) {
           continue;
         }
 
-        // Skip to the second match immediately if we have more than one match
-        // and there's a suggestion currently being shown (suggesting the first
-        // match)
-        if (suggestion && tab_num_matches > 1 && showing_suggestion) {
-          // Start with the second match (index 1)
-          tab_index = 1;
-        } else {
-          // Otherwise start with the first match
-          tab_index = 0;
-        }
+        // Always start with the first match
+        tab_index = 0;
       } else {
         // Same prefix, cycle to next match
         tab_index = (tab_index + 1) % tab_num_matches;

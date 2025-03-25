@@ -4,7 +4,7 @@
  */
 
 #include "shell.h"
-#include "aliases.h" // Added for alias support
+#include "aliases.h"   // Added for alias support
 #include "bookmarks.h" // Added for bookmark support
 #include "builtins.h"
 #include "filters.h"
@@ -659,7 +659,7 @@ void lsh_loop(void) {
 
   // Initialize aliases
   init_aliases();
-  
+
   // Initialize bookmarks
   init_bookmarks();
 
@@ -797,7 +797,7 @@ void lsh_loop(void) {
 
   // Clean up aliases on exit
   cleanup_aliases();
-  
+
   // Clean up bookmarks on exit
   cleanup_bookmarks();
 }
