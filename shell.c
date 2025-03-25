@@ -5,6 +5,7 @@
 
 #include "shell.h"
 #include "aliases.h" // Added for alias support
+#include "bookmarks.h" // Added for bookmark support
 #include "builtins.h"
 #include "filters.h"
 #include "git_integration.h" // Added for Git repository detection
@@ -19,7 +20,8 @@ static int g_console_width = 80;
 static int g_status_line = 0;
 static WORD g_normal_attributes = 0;
 static WORD g_status_attributes = 0;
-static BOOL g_status_bar_enabled = FALSE; // Flag to track if status bar is enabled
+static BOOL g_status_bar_enabled =
+    FALSE; // Flag to track if status bar is enabled
 
 /**
  * Temporarily hide the status bar before command execution
@@ -657,6 +659,9 @@ void lsh_loop(void) {
 
   // Initialize aliases
   init_aliases();
+  
+  // Initialize bookmarks
+  init_bookmarks();
 
   // Display the welcome banner at startup
   display_welcome_banner();
@@ -792,6 +797,7 @@ void lsh_loop(void) {
 
   // Clean up aliases on exit
   cleanup_aliases();
-
-  int halla = 1;
+  
+  // Clean up bookmarks on exit
+  cleanup_bookmarks();
 }

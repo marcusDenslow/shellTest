@@ -6,18 +6,22 @@
 #ifndef BUILTINS_H
 #define BUILTINS_H
 
+#include "aliases.h"   // Added for alias support
+#include "bookmarks.h" // Added for bookmark support
 #include "common.h"
-#include "structured_data.h"  // Add this include
-#include "aliases.h"          // Added for alias support
+#include "structured_data.h" // Add this include
 
 // Syntax highlighting definitions
-#define COLOR_DEFAULT 7   // FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE
-#define COLOR_KEYWORD 11  // FOREGROUND_CYAN | FOREGROUND_INTENSITY
-#define COLOR_STRING 10   // FOREGROUND_GREEN | FOREGROUND_INTENSITY
-#define COLOR_COMMENT 8   // FOREGROUND_INTENSITY (gray)
-#define COLOR_NUMBER 13   // FOREGROUND_MAGENTA | FOREGROUND_INTENSITY
-#define COLOR_PREPROCESSOR 14  // FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY (yellow)
-#define COLOR_IDENTIFIER 15 // FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY
+#define COLOR_DEFAULT 7  // FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE
+#define COLOR_KEYWORD 11 // FOREGROUND_CYAN | FOREGROUND_INTENSITY
+#define COLOR_STRING 10  // FOREGROUND_GREEN | FOREGROUND_INTENSITY
+#define COLOR_COMMENT 8  // FOREGROUND_INTENSITY (gray)
+#define COLOR_NUMBER 13  // FOREGROUND_MAGENTA | FOREGROUND_INTENSITY
+#define COLOR_PREPROCESSOR                                                     \
+  14 // FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY (yellow)
+#define COLOR_IDENTIFIER                                                       \
+  15 // FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE |
+     // FOREGROUND_INTENSITY
 
 // Add declarations for color functions
 void set_color(int color);
@@ -58,11 +62,16 @@ int lsh_news(char **args);
 // Alias command declarations - added for alias support
 int lsh_alias(char **args);
 int lsh_unalias(char **args);
-int lsh_aliases(char **args);  // New command to display all aliases
+int lsh_aliases(char **args); // New command to list all aliases
+// Bookmark command declarations - added for bookmark support
+int lsh_bookmark(char **args);
+int lsh_bookmarks(char **args);
+int lsh_goto(char **args);
+int lsh_unbookmark(char **args);
 
 // Commands with structured output
-TableData* lsh_dir_structured(char **args);
-TableData* lsh_ps_structured(char **args);
+TableData *lsh_dir_structured(char **args);
+TableData *lsh_ps_structured(char **args);
 
 // Add command to history
 void lsh_add_to_history(const char *command);
@@ -72,16 +81,16 @@ int lsh_num_builtins(void);
 
 // Expose the builtin command strings and function pointers
 extern char *builtin_str[];
-extern int (*builtin_func[]) (char **);
+extern int (*builtin_func[])(char **);
 
 /**
  * Extract a string value from a JSON object
- * 
+ *
  * @param json The JSON string to parse
  * @param key The key to find
  * @return Allocated string containing the value (caller must free)
  */
-char* extract_json_string(const char *json, const char *key);
+char *extract_json_string(const char *json, const char *key);
 
 // Include filter command declarations from filters.h
 #include "filters.h"
