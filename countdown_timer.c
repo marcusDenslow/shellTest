@@ -18,13 +18,15 @@
 
 // Global timer state
 static struct {
-  BOOL is_active;         // Whether timer is currently running
-  time_t end_time;        // When timer will expire (in seconds since epoch)
-  char display_text[64];  // Current timer display text
-  char session_name[128]; // Optional session name
-  HANDLE timer_thread;    // Handle to the timer thread
-  DWORD thread_id;        // ID of the timer thread
-  BOOL should_exit;       // Flag to signal thread exit
+  BOOL is_active;             // Whether timer is currently running
+  time_t end_time;            // When timer will expire (in seconds since epoch)
+  char display_text[64];      // Current timer display text
+  char session_name[128];     // Optional session name
+  HANDLE timer_thread;        // Handle to the timer thread
+  DWORD thread_id;            // ID of the timer thread
+  BOOL should_exit;           // Flag to signal thread exit
+  BOOL is_temporarily_hidden; // Flag to hide timer while running external
+                              // programs
 } timer_state = {0};
 
 // Forward declarations for internal functions
@@ -50,6 +52,7 @@ int start_countdown_timer(int seconds, const char *name) {
   // Set up the new timer
   timer_state.is_active = TRUE;
   timer_state.end_time = time(NULL) + seconds;
+  timer_state.is_temporarily_hidden = FALSE;
 
   // Set the session name if provided
   if (name && *name) {
@@ -105,6 +108,7 @@ void stop_countdown_timer() {
 
   // Clear timer state
   timer_state.is_active = FALSE;
+  timer_state.is_temporarily_hidden = FALSE;
   memset(timer_state.display_text, 0, sizeof(timer_state.display_text));
 }
 
@@ -121,7 +125,45 @@ BOOL is_timer_active() { return timer_state.is_active; }
  * @return Pointer to the display text string
  */
 const char *get_timer_display() {
-  return timer_state.is_active ? timer_state.display_text : "";
+  if (timer_state.is_active && !timer_state.is_temporarily_hidden) {
+    return timer_state.display_text;
+  }
+  return "";
+}
+
+/**
+ * Temporarily hide the timer display (used when running external programs)
+ */
+void hide_timer_display(void) {
+  timer_state.is_temporarily_hidden = TRUE;
+
+  // Clear the status bar immediately
+  HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+
+  if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+    // Get current console attributes to use instead of global variable
+    WORD currentAttributes = csbi.wAttributes;
+
+    // Clear the status bar line
+    COORD statusPos = {0, csbi.srWindow.Bottom};
+    DWORD written;
+    FillConsoleOutputCharacter(hConsole, ' ', csbi.dwSize.X, statusPos,
+                               &written);
+    FillConsoleOutputAttribute(hConsole, currentAttributes, csbi.dwSize.X,
+                               statusPos, &written);
+  }
+}
+
+/**
+ * Restore the timer display after it was hidden
+ */
+void show_timer_display(void) {
+  timer_state.is_temporarily_hidden = FALSE;
+
+  // Update the status bar immediately
+  HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  update_status_bar(hConsole, "");
 }
 
 /**
@@ -144,6 +186,7 @@ static DWORD WINAPI timer_thread_func(LPVOID lpParam) {
       // Clear timer state
       timer_state.is_active = FALSE;
       timer_state.should_exit = TRUE;
+      timer_state.is_temporarily_hidden = FALSE;
 
       // Clear timer display from status bar
       timer_state.display_text[0] = '\0';
@@ -172,8 +215,10 @@ static DWORD WINAPI timer_thread_func(LPVOID lpParam) {
       // Update timer display text
       update_timer_display_text();
 
-      // Update status bar directly (with minimal updates)
-      update_status_bar_minimal(hConsole);
+      if (!timer_state.is_temporarily_hidden) {
+        // Update status bar directly (with minimal updates)
+        update_status_bar_minimal(hConsole);
+      }
 
       // Restore cursor position if we saved it
       if (cursorPosSaved) {
@@ -197,7 +242,7 @@ static DWORD WINAPI timer_thread_func(LPVOID lpParam) {
 }
 
 /**
- * Update just the timer display text without updating the status bar
+ * Update the timer display text
  */
 static void update_timer_display_text() {
   if (!timer_state.is_active) {
@@ -223,8 +268,8 @@ static void update_timer_display_text() {
     sprintf(timer_state.display_text, "⏱️ %ds", seconds);
   }
 
-  // Add session name for longer display
-  if (strlen(timer_state.session_name) > 0 && (hours > 0 || minutes > 5)) {
+  // Add session name to display for ALL timers, not just long ones
+  if (strlen(timer_state.session_name) > 0) {
     char temp[64];
     strcpy(temp, timer_state.display_text);
     sprintf(timer_state.display_text, "%s - %s", temp,
@@ -238,7 +283,7 @@ static void update_timer_display_text() {
  * that only updates the timer portion
  */
 static void update_status_bar_minimal(HANDLE hConsole) {
-  if (!timer_state.is_active) {
+  if (!timer_state.is_active || timer_state.is_temporarily_hidden) {
     return;
   }
 
@@ -256,7 +301,7 @@ static void update_status_bar_minimal(HANDLE hConsole) {
   COORD timerPos = {console_width - timer_info_len - 2, csbi.srWindow.Bottom};
 
   // Set text color for timer info (cyan)
-  WORD timerInfoColor = FOREGROUND_CYAN | FOREGROUND_INTENSITY;
+  WORD timerInfoColor = FOREGROUND_RED | FOREGROUND_INTENSITY;
 
   // Write the timer text
   DWORD charsWritten;
@@ -270,12 +315,23 @@ static void update_status_bar_minimal(HANDLE hConsole) {
 
 /**
  * Show notification when timer completes
+ * Completely revised with robust direct input handling for ESC key
  */
 static void show_timer_notification() {
   // Get handle to console
   HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
   CONSOLE_SCREEN_BUFFER_INFO csbi;
   WORD originalAttributes;
+  DWORD oldConsoleMode;
+
+  // Save current console input mode
+  GetConsoleMode(hStdin, &oldConsoleMode);
+
+  // Set mode for reading input events
+  // The key here is ENABLE_WINDOW_INPUT to catch all input events
+  SetConsoleMode(hStdin, ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT |
+                             ENABLE_PROCESSED_INPUT);
 
   if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
     originalAttributes = csbi.wAttributes;
@@ -304,26 +360,90 @@ static void show_timer_notification() {
     top = 0;
 
   COORD boxPos = {left, top};
-  SetConsoleCursorPosition(hConsole, boxPos);
+
+  // Store box coordinates for later cleanup
+  SMALL_RECT boxRect;
+  boxRect.Left = left;
+  boxRect.Top = top;
+  boxRect.Right = left + boxWidth;
+  boxRect.Bottom = top + 6; // Box is 7 lines tall now
 
   // Draw notification box
-  printf("╔══════════════════════════════════════════════╗\n");
+  SetConsoleCursorPosition(hConsole, boxPos);
+  printf("╔═══════════════════════════════════════════════╗\n");
   SetConsoleCursorPosition(hConsole, (COORD){left, top + 1});
-  printf("║                TIMER FINISHED                ║\n");
+  printf("║                TIMER FINISHED                 ║\n");
   SetConsoleCursorPosition(hConsole, (COORD){left, top + 2});
-  printf("║                                              ║\n");
+  printf("║                                               ║\n");
   SetConsoleCursorPosition(hConsole, (COORD){left, top + 3});
-  printf("║  %-44s  ║\n", timer_state.session_name);
+  printf("║  %-44s ║\n", timer_state.session_name);
   SetConsoleCursorPosition(hConsole, (COORD){left, top + 4});
   printf("║  Time's up! Take a break or start a new timer ║\n");
   SetConsoleCursorPosition(hConsole, (COORD){left, top + 5});
-  printf("╚══════════════════════════════════════════════╝\n");
+  printf("║                                               ║\n");
+  SetConsoleCursorPosition(hConsole, (COORD){left, top + 6});
+  printf("╚═══════════════════════════════════════════════╝\n");
+
+  // Add key instruction - now includes Q as a backup
+  SetConsoleCursorPosition(hConsole, (COORD){left + 10, top + 5});
+  printf("Press q and then Q to close");
 
   // Reset attributes
   SetConsoleTextAttribute(hConsole, originalAttributes);
 
   // Restore cursor position
   SetConsoleCursorPosition(hConsole, savedPosition);
+
+  // Variables for input handling
+  INPUT_RECORD inputRecord;
+  DWORD numEventsRead;
+  BOOL keyPressed = FALSE;
+  DWORD startTime = GetTickCount();
+
+  // Main input loop - wait for ESC/Q key or timeout
+  while (GetTickCount() - startTime < 30000 && !keyPressed) {
+    // Use direct Windows API call to wait for input with timeout
+    DWORD waitResult = WaitForSingleObject(hStdin, 100);
+
+    if (waitResult == WAIT_OBJECT_0) {
+      // Input is available, read it
+      if (ReadConsoleInput(hStdin, &inputRecord, 1, &numEventsRead)) {
+        // Check if it's a key event
+        if (numEventsRead > 0 && inputRecord.EventType == KEY_EVENT &&
+            inputRecord.Event.KeyEvent.bKeyDown) {
+
+          // Check for ESC key (virtual key code 27)
+          if (inputRecord.Event.KeyEvent.wVirtualKeyCode == 'q') {
+            keyPressed = TRUE;
+          }
+          // Also check for 'Q' key as a backup
+          else if (inputRecord.Event.KeyEvent.wVirtualKeyCode == 'Q') {
+            keyPressed = TRUE;
+          }
+        }
+      }
+
+      // Flush any remaining input events to prevent backlog
+      FlushConsoleInputBuffer(hStdin);
+    }
+  }
+
+  // If ESC or Q was pressed, clear the notification
+  if (keyPressed) {
+    // Clear the box area
+    for (int y = boxRect.Top; y <= boxRect.Bottom; y++) {
+      SetConsoleCursorPosition(hConsole, (COORD){left, y});
+      for (int x = 0; x < boxWidth; x++) {
+        printf(" ");
+      }
+    }
+
+    // Return to the saved cursor position
+    SetConsoleCursorPosition(hConsole, savedPosition);
+  }
+
+  // Restore original console mode
+  SetConsoleMode(hStdin, oldConsoleMode);
 }
 
 /**
@@ -343,78 +463,83 @@ static int parse_time_string(char **args, int *seconds) {
   while (args[arg_index] != NULL) {
     // Check if this argument is a number
     if (isdigit(args[arg_index][0])) {
-      // Parse the number value
-      value = atoi(args[arg_index]);
-      arg_index++;
+      // Check if this same argument also contains unit characters (compact
+      // format)
+      if (strchr(args[arg_index], 'h') || strchr(args[arg_index], 'm') ||
+          strchr(args[arg_index], 's')) {
 
-      // Check if next arg is a time unit
-      if (args[arg_index] == NULL) {
-        // Assume seconds if no unit specified
-        *seconds += value;
-        any_time_parsed = 1;
-        break;
-      }
+        // Handle compact format like "1h30m45s"
+        char *p = args[arg_index];
+        char *endptr;
 
-      // Check time unit
-      char *unit = args[arg_index];
+        while (*p) {
+          // Parse number
+          value = strtol(p, &endptr, 10);
+          if (p == endptr) {
+            // No number found, move to next character
+            p++;
+            continue;
+          }
 
-      // Handle various time unit formats
-      if (strcasecmp(unit, "s") == 0 || strcasecmp(unit, "sec") == 0 ||
-          strcasecmp(unit, "secs") == 0 || strcasecmp(unit, "second") == 0 ||
-          strcasecmp(unit, "seconds") == 0) {
-        *seconds += value;
-        any_time_parsed = 1;
-      } else if (strcasecmp(unit, "m") == 0 || strcasecmp(unit, "min") == 0 ||
-                 strcasecmp(unit, "mins") == 0 ||
-                 strcasecmp(unit, "minute") == 0 ||
-                 strcasecmp(unit, "minutes") == 0) {
-        *seconds += value * 60;
-        any_time_parsed = 1;
-      } else if (strcasecmp(unit, "h") == 0 || strcasecmp(unit, "hr") == 0 ||
-                 strcasecmp(unit, "hrs") == 0 ||
-                 strcasecmp(unit, "hour") == 0 ||
-                 strcasecmp(unit, "hours") == 0) {
-        *seconds += value * 3600;
-        any_time_parsed = 1;
-      } else {
-        // Invalid time unit - check if it might be the timer name
-        arg_index--;
-        break;
-      }
+          // Check unit
+          if (*endptr == 'h') {
+            *seconds += value * 3600;
+            any_time_parsed = 1;
+          } else if (*endptr == 'm') {
+            *seconds += value * 60;
+            any_time_parsed = 1;
+          } else if (*endptr == 's') {
+            *seconds += value;
+            any_time_parsed = 1;
+          }
 
-      arg_index++;
-    } else if (strchr(args[arg_index], 'h') || strchr(args[arg_index], 'm') ||
-               strchr(args[arg_index], 's')) {
-      // Handle compact format like "1h30m45s"
-      char *p = args[arg_index];
-      char *endptr;
-
-      while (*p) {
-        // Parse number
-        value = strtol(p, &endptr, 10);
-        if (p == endptr) {
-          // No number found, move to next character
-          p++;
-          continue;
+          // Move past the unit
+          p = endptr + 1;
         }
 
-        // Check unit
-        if (*endptr == 'h') {
-          *seconds += value * 3600;
-          any_time_parsed = 1;
-        } else if (*endptr == 'm') {
-          *seconds += value * 60;
-          any_time_parsed = 1;
-        } else if (*endptr == 's') {
+        arg_index++;
+      } else {
+        // Parse the number value (separate number and unit)
+        value = atoi(args[arg_index]);
+        arg_index++;
+
+        // Check if next arg is a time unit
+        if (args[arg_index] == NULL) {
+          // Assume seconds if no unit specified
           *seconds += value;
           any_time_parsed = 1;
+          break;
         }
 
-        // Move past the unit
-        p = endptr + 1;
-      }
+        // Check time unit
+        char *unit = args[arg_index];
 
-      arg_index++;
+        // Handle various time unit formats
+        if (strcasecmp(unit, "s") == 0 || strcasecmp(unit, "sec") == 0 ||
+            strcasecmp(unit, "secs") == 0 || strcasecmp(unit, "second") == 0 ||
+            strcasecmp(unit, "seconds") == 0) {
+          *seconds += value;
+          any_time_parsed = 1;
+        } else if (strcasecmp(unit, "m") == 0 || strcasecmp(unit, "min") == 0 ||
+                   strcasecmp(unit, "mins") == 0 ||
+                   strcasecmp(unit, "minute") == 0 ||
+                   strcasecmp(unit, "minutes") == 0) {
+          *seconds += value * 60;
+          any_time_parsed = 1;
+        } else if (strcasecmp(unit, "h") == 0 || strcasecmp(unit, "hr") == 0 ||
+                   strcasecmp(unit, "hrs") == 0 ||
+                   strcasecmp(unit, "hour") == 0 ||
+                   strcasecmp(unit, "hours") == 0) {
+          *seconds += value * 3600;
+          any_time_parsed = 1;
+        } else {
+          // Invalid time unit - check if it might be the timer name
+          arg_index--;
+          break;
+        }
+
+        arg_index++;
+      }
     } else {
       // Not a time specification, assume it's the session name
       break;
@@ -516,30 +641,52 @@ int lsh_focus_timer(char **args) {
   if (args[name_index] != NULL) {
     // Check if the name is in quotes
     if (args[name_index][0] == '"' || args[name_index][0] == '\'') {
-      // Remove quotes and concat all remaining args
-      char *p = args[name_index];
-      int in_quotes = 1;
-      while (*p) {
-        if (*p == args[name_index][0]) {
-          in_quotes = !in_quotes;
-          p++;
-          continue;
+      char quote_char = args[name_index][0];
+      char *start = args[name_index] + 1; // Skip opening quote
+
+      // Check if closing quote is in the same argument
+      char *end = strchr(start, quote_char);
+      if (end) {
+        // Both quotes in the same argument
+        *end = '\0'; // Temporarily terminate the string at closing quote
+        strcpy(session_name, start);
+      } else {
+        // Quotes span multiple arguments
+        strcpy(session_name, start);
+        name_index++;
+
+        // Continue until we find the closing quote
+        while (args[name_index] != NULL) {
+          char *closing_quote = strchr(args[name_index], quote_char);
+          if (closing_quote) {
+            // Found closing quote
+            *closing_quote = '\0';
+            strcat(session_name, " ");
+            strcat(session_name, args[name_index]);
+            break;
+          } else {
+            // No closing quote in this argument
+            strcat(session_name, " ");
+            strcat(session_name, args[name_index]);
+            name_index++;
+          }
         }
-        if (in_quotes && strlen(session_name) < sizeof(session_name) - 1) {
-          strncat(session_name, p, 1);
-        }
-        p++;
       }
     } else {
-      // Concatenate all remaining args as session name
-      while (args[name_index] != NULL) {
+      // No quotes - concatenate all remaining args
+      do {
         if (strlen(session_name) > 0) {
           strcat(session_name, " ");
         }
         strcat(session_name, args[name_index]);
         name_index++;
-      }
+      } while (args[name_index] != NULL);
     }
+  }
+
+  // If no session name was provided, use a default
+  if (strlen(session_name) == 0) {
+    strcpy(session_name, "Focus Session");
   }
 
   // Start the timer

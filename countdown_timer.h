@@ -37,6 +37,16 @@ BOOL is_timer_active();
 const char *get_timer_display();
 
 /**
+ * Temporarily hide the timer display (used when running external programs)
+ */
+void hide_timer_display(void);
+
+/**
+ * Restore the timer display after it was hidden
+ */
+void show_timer_display(void);
+
+/**
  * Command handler for the "timer" command
  *
  * @param args Command arguments

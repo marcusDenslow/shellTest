@@ -480,6 +480,9 @@ int lsh_launch(char **args) {
     strcat(command, " ");
   }
 
+  // Hide the timer before launching external program
+  hide_timer_display();
+
   STARTUPINFO si;
   PROCESS_INFORMATION pi;
   ZeroMemory(&si, sizeof(si));
@@ -490,6 +493,8 @@ int lsh_launch(char **args) {
   if (!CreateProcess(NULL, command, NULL, NULL, FALSE, 0, NULL, NULL, &si,
                      &pi)) {
     fprintf(stderr, "lsh: failed to execute %s\n", args[0]);
+    // Restore timer even if process creation failed
+    show_timer_display();
     return 1;
   }
 
@@ -497,6 +502,9 @@ int lsh_launch(char **args) {
   WaitForSingleObject(pi.hProcess, INFINITE);
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
+
+  // Restore timer display after external program finishes
+  show_timer_display();
 
   return 1;
 }
