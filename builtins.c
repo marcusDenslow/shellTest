@@ -58,28 +58,29 @@ HistoryEntry command_history[HISTORY_SIZE] = {0};
 int history_count = 0; // Total number of commands entered
 int history_index = 0; // Current index in the circular buffer
 
-// Array of built-in command names
 char *builtin_str[] = {
-    "cd",       "help",      "exit",    "ls",         "dir", "clear",
-    "cls",      "mkdir",     "rmdir",   "del",        "rm",  "touch",
-    "pwd",      "cat",       "history", "copy",       "cp",  "paste",
-    "move",     "mv",        "ps",      "news",
+    "cd",       "help",      "exit",    "ls",         "dir",         "clear",
+    "cls",      "mkdir",     "rmdir",   "del",        "rm",          "touch",
+    "pwd",      "cat",       "history", "copy",       "cp",          "paste",
+    "move",     "mv",        "ps",      "news",       "focus-timer", "timer",
     "alias",   // Added for alias support
     "unalias", // Added for alias support
     "aliases", // New command to list all aliases
     "bookmark", "bookmarks", "goto",    "unbookmark",
 };
 
-// Array of built-in command function pointers
+// Add to the builtin_func array:
 int (*builtin_func[])(char **) = {
-    &lsh_cd,      &lsh_help,     &lsh_exit,      &lsh_dir,   &lsh_dir,
-    &lsh_clear,   &lsh_clear,    &lsh_mkdir,     &lsh_rmdir, &lsh_del,
-    &lsh_del,     &lsh_touch,    &lsh_pwd,       &lsh_cat,   &lsh_history,
-    &lsh_copy,    &lsh_copy,     &lsh_paste,     &lsh_move,  &lsh_move,
-    &lsh_ps,      &lsh_news,
+    &lsh_cd,         &lsh_help,     &lsh_exit,        &lsh_dir,
+    &lsh_dir,        &lsh_clear,    &lsh_clear,       &lsh_mkdir,
+    &lsh_rmdir,      &lsh_del,      &lsh_del,         &lsh_touch,
+    &lsh_pwd,        &lsh_cat,      &lsh_history,     &lsh_copy,
+    &lsh_copy,       &lsh_paste,    &lsh_move,        &lsh_move,
+    &lsh_ps,         &lsh_news,     &lsh_focus_timer, &lsh_focus_timer,
     &lsh_alias,   // Added for alias support
     &lsh_unalias, // Added for alias support
-    &lsh_aliases, &lsh_bookmark, &lsh_bookmarks, &lsh_goto,  &lsh_unbookmark,
+    &lsh_aliases,    &lsh_bookmark, &lsh_bookmarks,   &lsh_goto,
+    &lsh_unbookmark,
 };
 
 // Return the number of built-in commands

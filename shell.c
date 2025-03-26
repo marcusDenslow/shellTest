@@ -7,6 +7,7 @@
 #include "aliases.h"   // Added for alias support
 #include "bookmarks.h" // Added for bookmark support
 #include "builtins.h"
+#include "countdown_timer.h"
 #include "filters.h"
 #include "git_integration.h" // Added for Git repository detection
 #include "line_reader.h"
@@ -134,8 +135,11 @@ void check_console_resize(HANDLE hConsole) {
 }
 
 /**
- * Update the status bar with Git information
+ * Updates to shell.c to integrate the focus timer
+ * with the status bar
  */
+
+// Modify the update_status_bar function to include timer information
 void update_status_bar(HANDLE hConsole, const char *git_info) {
   // Skip if status bar is not enabled yet
   if (!g_status_bar_enabled)
@@ -176,6 +180,10 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
   FillConsoleOutputAttribute(hConsole, g_status_attributes, g_console_width,
                              statusPos, &charsWritten);
 
+  // Check if we have a timer running
+  const char *timer_info = get_timer_display();
+  BOOL has_timer = is_timer_active() && timer_info && timer_info[0];
+
   // If we have Git info to display
   if (git_info && git_info[0]) {
     // Prepare clean git info (strip ANSI color codes if any)
@@ -207,21 +215,71 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
     WORD gitInfoColor = g_status_attributes | FOREGROUND_RED | FOREGROUND_BLUE |
                         FOREGROUND_INTENSITY;
 
-    // Write Git info directly to the console buffer with attributes
-    WriteConsoleOutputCharacter(hConsole, clean_git_info,
-                                strlen(clean_git_info), statusPos,
-                                &charsWritten);
+    // Calculate positions for both Git info and timer (if needed)
+    int git_info_len = strlen(clean_git_info);
 
-    // Set the attributes for the written characters
-    DWORD length = strlen(clean_git_info);
-    COORD attrPos = statusPos;
-    FillConsoleOutputAttribute(hConsole, gitInfoColor, length, attrPos,
-                               &charsWritten);
+    if (has_timer) {
+      // Display Git info on the left
+      WriteConsoleOutputCharacter(hConsole, clean_git_info, git_info_len,
+                                  statusPos, &charsWritten);
+
+      // Set the attributes for the written characters
+      COORD attrPos = statusPos;
+      FillConsoleOutputAttribute(hConsole, gitInfoColor, git_info_len, attrPos,
+                                 &charsWritten);
+
+      // Display timer info on the right
+      int timer_info_len = strlen(timer_info);
+      COORD timerPos = {g_console_width - timer_info_len - 2, g_status_line};
+
+      // Set text color for timer info (cyan)
+      WORD timerInfoColor =
+          g_status_attributes | FOREGROUND_RED | FOREGROUND_INTENSITY;
+
+      WriteConsoleOutputCharacter(hConsole, timer_info, timer_info_len,
+                                  timerPos, &charsWritten);
+
+      FillConsoleOutputAttribute(hConsole, timerInfoColor, timer_info_len,
+                                 timerPos, &charsWritten);
+    } else {
+      // No timer, just display Git info
+      WriteConsoleOutputCharacter(hConsole, clean_git_info,
+                                  strlen(clean_git_info), statusPos,
+                                  &charsWritten);
+
+      // Set the attributes for the written characters
+      DWORD length = strlen(clean_git_info);
+      COORD attrPos = statusPos;
+      FillConsoleOutputAttribute(hConsole, gitInfoColor, length, attrPos,
+                                 &charsWritten);
+    }
   } else {
-    // Default message when no Git info is available
-    const char *defaultMsg = " Shell Status";
-    WriteConsoleOutputCharacter(hConsole, defaultMsg, strlen(defaultMsg),
-                                statusPos, &charsWritten);
+    if (has_timer) {
+      // No Git info but we have a timer
+      // Display timer on the right
+      int timer_info_len = strlen(timer_info);
+      COORD timerPos = {g_console_width - timer_info_len - 2, g_status_line};
+
+      // Set text color for timer info (cyan)
+      WORD timerInfoColor =
+          g_status_attributes | FOREGROUND_RED | FOREGROUND_INTENSITY;
+
+      WriteConsoleOutputCharacter(hConsole, timer_info, timer_info_len,
+                                  timerPos, &charsWritten);
+
+      FillConsoleOutputAttribute(hConsole, timerInfoColor, timer_info_len,
+                                 timerPos, &charsWritten);
+
+      // Also show default message on left
+      const char *defaultMsg = " Shell Status";
+      WriteConsoleOutputCharacter(hConsole, defaultMsg, strlen(defaultMsg),
+                                  statusPos, &charsWritten);
+    } else {
+      // Default message when no Git info or timer is available
+      const char *defaultMsg = " Shell Status";
+      WriteConsoleOutputCharacter(hConsole, defaultMsg, strlen(defaultMsg),
+                                  statusPos, &charsWritten);
+    }
   }
 
   // Restore original cursor position
