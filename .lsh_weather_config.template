@@ -1,0 +1,4 @@
+YOUR_API_KEY_HERE
+# Replace the line above with your actual OpenWeatherMap API key
+# Get a free API key at: https://openweathermap.org/
+# Save this file as .lsh_weather_config in your home directory

@@ -66,7 +66,7 @@ char *builtin_str[] = {
     "alias",   // Added for alias support
     "unalias", // Added for alias support
     "aliases", // New command to list all aliases
-    "bookmark", "bookmarks", "goto",    "unbookmark",
+    "bookmark", "bookmarks", "goto",    "unbookmark", "weather",
 };
 
 // Add to the builtin_func array:
@@ -80,7 +80,7 @@ int (*builtin_func[])(char **) = {
     &lsh_alias,   // Added for alias support
     &lsh_unalias, // Added for alias support
     &lsh_aliases,    &lsh_bookmark, &lsh_bookmarks,   &lsh_goto,
-    &lsh_unbookmark,
+    &lsh_unbookmark, &lsh_weather,
 };
 
 // Return the number of built-in commands
