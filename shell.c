@@ -4,7 +4,8 @@
  */
 
 #include "shell.h"
-#include "aliases.h"   // Added for alias support
+#include "aliases.h" // Added for alias support
+#include "autocorrect.h"
 #include "bookmarks.h" // Added for bookmark support
 #include "builtins.h"
 #include "countdown_timer.h"
@@ -470,7 +471,7 @@ void display_welcome_banner(void) {
 }
 
 /**
- * Launch an external program
+ * Launch an external program with auto-correction support
  */
 int lsh_launch(char **args) {
   // Construct command line string for CreateProcess
@@ -492,6 +493,19 @@ int lsh_launch(char **args) {
   // Create a new process
   if (!CreateProcess(NULL, command, NULL, NULL, FALSE, 0, NULL, NULL, &si,
                      &pi)) {
+
+    DWORD error = GetLastError();
+
+    // Check if this is a "command not found" type error
+    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+      // Try auto-correction
+      if (attempt_command_correction(args)) {
+        // Command was corrected and executed successfully
+        show_timer_display();
+        return 1;
+      }
+    }
+
     fprintf(stderr, "lsh: failed to execute %s\n", args[0]);
     // Restore timer even if process creation failed
     show_timer_display();
@@ -510,7 +524,7 @@ int lsh_launch(char **args) {
 }
 
 /**
- * Execute a command (updated to handle aliases)
+ * Execute a command (updated with auto-correction support)
  */
 int lsh_execute(char **args) {
   int i;
