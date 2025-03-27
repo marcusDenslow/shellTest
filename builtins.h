@@ -70,6 +70,8 @@ int lsh_goto(char **args);
 int lsh_unbookmark(char **args);
 int lsh_focus_timer(char **args);
 int lsh_weather(char **args);
+// Text search command
+int lsh_grep(char **args);
 
 // Commands with structured output
 TableData *lsh_dir_structured(char **args);
