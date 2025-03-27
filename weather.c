@@ -21,6 +21,9 @@
 // Define a placeholder for the weather API key
 #define WEATHER_API_KEY_PLACEHOLDER "YOUR_API_KEY_HERE"
 
+// Global debug flag
+static BOOL g_debug_mode = FALSE;
+
 // Structure to hold location data
 typedef struct {
   char city[64];
@@ -44,6 +47,18 @@ typedef struct {
   char region[64];  // Added for complete location info
   char country[64]; // Added for complete location info
 } WeatherData;
+
+// Debug print function that only outputs when debug mode is enabled
+static void debug_print(const char *format, ...) {
+  if (!g_debug_mode)
+    return;
+
+  va_list args;
+  va_start(args, format);
+  printf("Debug: ");
+  vprintf(format, args);
+  va_end(args);
+}
 
 // Function to read API key from config file
 static char *read_api_key_from_config() {
@@ -195,6 +210,18 @@ static void update_location_from_weather(LocationData *location,
  * Command handler for the "weather" command
  */
 int lsh_weather(char **args) {
+  // Reset debug mode by default
+  g_debug_mode = FALSE;
+
+  // Check for debug flag
+  int arg_start = 1;
+  if (args[1] != NULL &&
+      (strcmp(args[1], "-d") == 0 || strcmp(args[1], "-debug") == 0)) {
+    g_debug_mode = TRUE;
+    arg_start = 2;
+    debug_print("Debug mode enabled\n");
+  }
+
   // Check if API key is properly configured
   const char *api_key = get_weather_api_key();
   if (strcmp(api_key, WEATHER_API_KEY_PLACEHOLDER) == 0) {
@@ -214,16 +241,16 @@ int lsh_weather(char **args) {
   memset(&weather, 0, sizeof(WeatherData));
 
   // Check if a location was provided
-  if (args[1] != NULL) {
+  if (args[arg_start] != NULL) {
     // Handle multi-word city names by concatenating all arguments
     char full_location[256] = "";
-    int i = 1;
+    int i = arg_start;
 
     // Start with the first word
-    strcpy(full_location, args[1]);
+    strcpy(full_location, args[i]);
 
     // Add remaining words with spaces in between
-    i = 2;
+    i++;
     while (args[i] != NULL) {
       strcat(full_location, " ");
       strcat(full_location, args[i]);
@@ -263,7 +290,7 @@ int lsh_weather(char **args) {
 static int get_location_by_ip(LocationData *location) {
   char *response = http_get_request(IP_API_HOST, IP_API_PATH, NULL);
   if (!response) {
-    printf("Debug: Failed to get location by IP - no response\n");
+    debug_print("Failed to get location by IP - no response\n");
     return 0;
   }
 
@@ -303,13 +330,13 @@ static int get_location_by_ip(LocationData *location) {
 
   // Check if we got at least the city
   if (location->city[0] == '\0') {
-    printf("Debug: Failed to extract city from location response\n");
+    debug_print("Failed to extract city from location response\n");
     return 0;
   }
 
-  printf("Debug: Successfully detected location: %s, %s, %s\n", location->city,
-         location->region[0] ? location->region : "N/A",
-         location->country[0] ? location->country : "N/A");
+  debug_print("Successfully detected location: %s, %s, %s\n", location->city,
+              location->region[0] ? location->region : "N/A",
+              location->country[0] ? location->country : "N/A");
 
   return 1;
 }
@@ -327,36 +354,35 @@ static int get_weather_data(const char *location, WeatherData *weather) {
            location, get_weather_api_key());
 
   printf("Attempting to get weather for: %s\n", location);
-  printf("Debug: Using API endpoint: %s%s\n", WEATHER_API_PATH, query_params);
+  debug_print("Using API endpoint: %s\n", WEATHER_API_PATH, query_params);
 
   char *response =
       http_get_request(WEATHER_API_HOST, WEATHER_API_PATH, query_params);
   if (!response) {
-    printf("Debug: HTTP request failed - no response received\n");
+    debug_print("HTTP request failed - no response received\n");
     return 0;
   }
 
   // Check if response contains an error message
   if (strstr(response, "\"cod\":\"404\"")) {
-    printf("Debug: Location not found (404): %s\n", location);
+    debug_print("Location not found (404): %s\n", location);
     free(response);
     return 0;
   }
 
   if (strstr(response, "\"cod\":\"401\"")) {
-    printf(
-        "Debug: API key error (401) - Invalid API key or not activated yet\n");
+    debug_print("API key error (401) - Invalid API key or not activated yet\n");
     free(response);
     return 0;
   }
 
-  printf("Debug: Received API response of length: %d bytes\n",
-         (int)strlen(response));
+  debug_print("Received API response of length: %d bytes\n",
+              (int)strlen(response));
 
   // Extract weather information from the JSON response
   char *main_json = strstr(response, "\"main\":");
   if (!main_json) {
-    printf("Debug: Could not find 'main' section in response\n");
+    debug_print("Could not find 'main' section in response\n");
     free(response);
     return 0;
   }
@@ -390,7 +416,7 @@ static int get_weather_data(const char *location, WeatherData *weather) {
     snprintf(weather->wind_direction, sizeof(weather->wind_direction), "%s",
              directions[dir_index]);
   } else {
-    printf("Debug: Could not find 'wind' section in response\n");
+    debug_print("Could not find 'wind' section in response\n");
   }
 
   // Weather description is in the "weather" array's first object
@@ -407,17 +433,17 @@ static int get_weather_data(const char *location, WeatherData *weather) {
       strncpy(weather->description, desc, sizeof(weather->description) - 1);
       free(desc);
     } else {
-      printf("Debug: Could not extract 'description' from response\n");
+      debug_print("Could not extract 'description' from response\n");
     }
 
     if (icon) {
       strncpy(weather->icon, icon, sizeof(weather->icon) - 1);
       free(icon);
     } else {
-      printf("Debug: Could not extract 'icon' from response\n");
+      debug_print("Could not extract 'icon' from response\n");
     }
   } else {
-    printf("Debug: Could not find 'weather' section in response\n");
+    debug_print("Could not find 'weather' section in response\n");
   }
 
   // Extract location data from the response
@@ -436,7 +462,8 @@ static int get_weather_data(const char *location, WeatherData *weather) {
   strncpy(weather->country, loc_temp.country, sizeof(weather->country) - 1);
   weather->country[sizeof(weather->country) - 1] = '\0';
 
-  printf("Debug: Successfully parsed weather data\n");
+  debug_print("Successfully parsed weather data\n");
+  debug_print("Hey there!\n");
   return 1;
 }
 
@@ -454,7 +481,8 @@ static void display_weather(const LocationData *location,
   originalAttrs = consoleInfo.wAttributes;
 
   // Set box color to cyan
-  WORD boxColor = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+  WORD boxColor = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED |
+                  FOREGROUND_INTENSITY;
 
   // Set text color to bright white
   WORD textColor = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE |
@@ -463,6 +491,17 @@ static void display_weather(const LocationData *location,
   // Calculate box dimensions
   int boxWidth = 52;
   int contentWidth = boxWidth - 4; // 2 chars padding on each side
+
+  // Get console width for centering
+  int consoleWidth = consoleInfo.dwSize.X;
+  if (consoleWidth <= 0) {
+    consoleWidth = 80; // Default if we can't get the console width
+  }
+
+  // Calculate left padding to center the box on the screen
+  int left_padding = (consoleWidth - boxWidth) / 2;
+  if (left_padding < 0)
+    left_padding = 0;
 
   // Construct location string - prioritize complete location data
   char locationStr[128] = "";
@@ -522,18 +561,16 @@ static void display_weather(const LocationData *location,
       icon = "🌫️"; // Mist
   }
 
-  // Helper function to center text
-  char centeredText[128];
-
   // Draw the box with weather info
   printf("\n");
 
   // Top border
   SetConsoleTextAttribute(hConsole, boxColor);
+  printf("%*s", left_padding, "");
   printf("╔══════════════════════════════════════════════════╗\n");
 
   // Title row - centered
-  SetConsoleTextAttribute(hConsole, boxColor);
+  printf("%*s", left_padding, "");
   printf("║");
   SetConsoleTextAttribute(hConsole, textColor);
 
@@ -546,124 +583,101 @@ static void display_weather(const LocationData *location,
   SetConsoleTextAttribute(hConsole, boxColor);
   printf("║\n");
 
-  // Location row - centered
-  int locationLen = strlen(locationStr);
-  int locationPadding = (contentWidth - locationLen) / 2;
-
-  SetConsoleTextAttribute(hConsole, boxColor);
+  // Location row - left-aligned
+  printf("%*s", left_padding, "");
   printf("║");
   SetConsoleTextAttribute(hConsole, textColor);
-  printf("%*s%s%*s", locationPadding + 2, "", locationStr,
-         contentWidth - locationLen - locationPadding, "");
+  printf("  %-*s", contentWidth, locationStr);
   SetConsoleTextAttribute(hConsole, boxColor);
   printf("║\n");
 
   // Separator
+  printf("%*s", left_padding, "");
   printf("╠══════════════════════════════════════════════════╣\n");
 
-  // Icon and temperature row - centered
+  // Temperature row - left-aligned
   char tempDisplay[32];
   sprintf(tempDisplay, "%s  %s", icon, weather->temperature);
-  int tempLen = strlen(tempDisplay);
-  int tempPadding = (contentWidth - tempLen) / 2;
 
-  SetConsoleTextAttribute(hConsole, boxColor);
+  printf("%*s", left_padding, "");
   printf("║");
   SetConsoleTextAttribute(hConsole, textColor);
-  printf("%*s%s%*s", tempPadding + 2, "", tempDisplay,
-         contentWidth - tempLen - tempPadding + 5, "");
+  printf("  %-*s", contentWidth, tempDisplay);
+  SetConsoleTextAttribute(hConsole, boxColor);
+  printf("     ║\n");
+
+  // Description row - left-aligned
+  printf("%*s", left_padding, "");
+  printf("║");
+  SetConsoleTextAttribute(hConsole, textColor);
+  printf("  %-*s", contentWidth, weather->description);
   SetConsoleTextAttribute(hConsole, boxColor);
   printf("║\n");
 
-  // Description row - centered
-  int descLen = strlen(weather->description);
-  int descPadding = (contentWidth - descLen) / 2;
-
-  SetConsoleTextAttribute(hConsole, boxColor);
-  printf("║");
-  SetConsoleTextAttribute(hConsole, textColor);
-  printf("%*s%s%*s", descPadding + 2, "", weather->description,
-         contentWidth - descLen - descPadding, "");
-  SetConsoleTextAttribute(hConsole, boxColor);
-  printf("║\n");
-
-  // Feels like row - centered
+  // Feels like row - left-aligned
   char feelsLikeText[64];
   sprintf(feelsLikeText, "Feels like: %s", weather->feels_like);
-  int feelsLen = strlen(feelsLikeText);
-  int feelsPadding = (contentWidth - feelsLen) / 2;
 
-  SetConsoleTextAttribute(hConsole, boxColor);
+  printf("%*s", left_padding, "");
   printf("║");
   SetConsoleTextAttribute(hConsole, textColor);
-  printf("%*s%s%*s", feelsPadding + 2, "", feelsLikeText,
-         contentWidth - feelsLen - feelsPadding + 1, "");
+  printf("  %-*s", contentWidth, feelsLikeText);
   SetConsoleTextAttribute(hConsole, boxColor);
-  printf("║\n");
+  printf(" ║\n");
 
   // Separator
+  printf("%*s", left_padding, "");
   printf("╠══════════════════════════════════════════════════╣\n");
 
-  // Details rows - centered
+  // Details rows - left-aligned
   char humidityText[64];
   sprintf(humidityText, "Humidity: %s", weather->humidity);
-  int humidityLen = strlen(humidityText);
-  int humidityPadding = (contentWidth - humidityLen) / 2;
 
-  SetConsoleTextAttribute(hConsole, boxColor);
+  printf("%*s", left_padding, "");
   printf("║");
   SetConsoleTextAttribute(hConsole, textColor);
-  printf("%*s%s%*s", humidityPadding + 2, "", humidityText,
-         contentWidth - humidityLen - humidityPadding, "");
+  printf("  %-*s", contentWidth, humidityText);
   SetConsoleTextAttribute(hConsole, boxColor);
   printf("║\n");
 
-  // Wind row - centered
+  // Wind row - left-aligned
   char windText[64];
   sprintf(windText, "Wind: %s",
           weather->wind_speed[0] != '\0' ? weather->wind_speed : "N/A");
-  int windLen = strlen(windText);
-  int windPadding = (contentWidth - windLen) / 2;
 
-  SetConsoleTextAttribute(hConsole, boxColor);
+  printf("%*s", left_padding, "");
   printf("║");
   SetConsoleTextAttribute(hConsole, textColor);
-  printf("%*s%s%*s", windPadding + 2, "", windText,
-         contentWidth - windLen - windPadding, "");
+  printf("  %-*s", contentWidth, windText);
   SetConsoleTextAttribute(hConsole, boxColor);
   printf("║\n");
 
-  // Direction row - centered
+  // Direction row - left-aligned
   if (weather->wind_direction[0] != '\0') {
     char directionText[64];
     sprintf(directionText, "Direction: %s", weather->wind_direction);
-    int directionLen = strlen(directionText);
-    int directionPadding = (contentWidth - directionLen) / 2;
 
-    SetConsoleTextAttribute(hConsole, boxColor);
+    printf("%*s", left_padding, "");
     printf("║");
     SetConsoleTextAttribute(hConsole, textColor);
-    printf("%*s%s%*s", directionPadding + 2, "", directionText,
-           contentWidth - directionLen - directionPadding, "");
+    printf("  %-*s", contentWidth, directionText);
     SetConsoleTextAttribute(hConsole, boxColor);
     printf("║\n");
   }
 
-  // Pressure row - centered
+  // Pressure row - left-aligned
   char pressureText[64];
   sprintf(pressureText, "Pressure: %s", weather->pressure);
-  int pressureLen = strlen(pressureText);
-  int pressurePadding = (contentWidth - pressureLen) / 2;
 
-  SetConsoleTextAttribute(hConsole, boxColor);
+  printf("%*s", left_padding, "");
   printf("║");
   SetConsoleTextAttribute(hConsole, textColor);
-  printf("%*s%s%*s", pressurePadding + 2, "", pressureText,
-         contentWidth - pressureLen - pressurePadding, "");
+  printf("  %-*s", contentWidth, pressureText);
   SetConsoleTextAttribute(hConsole, boxColor);
   printf("║\n");
 
   // Bottom border
+  printf("%*s", left_padding, "");
   printf("╚══════════════════════════════════════════════════╝\n\n");
 
   // Reset console attributes
@@ -805,7 +819,7 @@ static char *http_get_request(const char *host, const char *path,
   hInternet = InternetOpen("LSH Weather Client/1.0",
                            INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
   if (!hInternet) {
-    printf("Debug: InternetOpen failed with error: %lu\n", GetLastError());
+    debug_print("InternetOpen failed with error: %lu\n", GetLastError());
     goto cleanup;
   }
 
@@ -822,7 +836,7 @@ static char *http_get_request(const char *host, const char *path,
   hConnect = InternetConnect(hInternet, host, INTERNET_DEFAULT_HTTP_PORT, NULL,
                              NULL, INTERNET_SERVICE_HTTP, 0, 0);
   if (!hConnect) {
-    printf("Debug: InternetConnect failed with error: %lu\n", GetLastError());
+    debug_print("InternetConnect failed with error: %lu\n", GetLastError());
     goto cleanup;
   }
 
@@ -837,7 +851,7 @@ static char *http_get_request(const char *host, const char *path,
   hRequest = HttpOpenRequest(hConnect, "GET", full_path, NULL, NULL, NULL,
                              INTERNET_FLAG_RELOAD, 0);
   if (!hRequest) {
-    printf("Debug: HttpOpenRequest failed with error: %lu\n", GetLastError());
+    debug_print("HttpOpenRequest failed with error: %lu\n", GetLastError());
     goto cleanup;
   }
 
@@ -846,8 +860,8 @@ static char *http_get_request(const char *host, const char *path,
                              "User-Agent: LSH Weather Client\r\n"
                              "Accept: application/json\r\n",
                              -1, HTTP_ADDREQ_FLAG_ADD)) {
-    printf("Debug: HttpAddRequestHeaders failed with error: %lu\n",
-           GetLastError());
+    debug_print("HttpAddRequestHeaders failed with error: %lu\n",
+                GetLastError());
     goto cleanup;
   }
 
@@ -863,7 +877,7 @@ static char *http_get_request(const char *host, const char *path,
 
   // Send the request
   if (!HttpSendRequest(hRequest, NULL, 0, NULL, 0)) {
-    printf("Debug: HttpSendRequest failed with error: %lu\n", GetLastError());
+    debug_print("HttpSendRequest failed with error: %lu\n", GetLastError());
     goto cleanup;
   }
 
@@ -872,13 +886,13 @@ static char *http_get_request(const char *host, const char *path,
   DWORD statusCodeSize = sizeof(statusCode);
   if (!HttpQueryInfo(hRequest, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
                      &statusCode, &statusCodeSize, NULL)) {
-    printf("Debug: HttpQueryInfo failed with error: %lu\n", GetLastError());
+    debug_print("HttpQueryInfo failed with error: %lu\n", GetLastError());
     goto cleanup;
   }
 
-  printf("Debug: HTTP status code: %lu\n", statusCode);
+  debug_print("HTTP status code: %lu\n", statusCode);
   if (statusCode != 200) {
-    printf("Debug: Non-200 status code received: %lu\n", statusCode);
+    debug_print("Non-200 status code received: %lu\n", statusCode);
     goto cleanup;
   }
 
@@ -886,7 +900,7 @@ static char *http_get_request(const char *host, const char *path,
   responseSize = BUFFER_SIZE;
   response = (char *)malloc(responseSize);
   if (!response) {
-    printf("Debug: Failed to allocate memory for response\n");
+    debug_print("Failed to allocate memory for response\n");
     goto cleanup;
   }
 
@@ -898,7 +912,7 @@ static char *http_get_request(const char *host, const char *path,
       responseSize *= 2;
       char *new_response = (char *)realloc(response, responseSize);
       if (!new_response) {
-        printf("Debug: Failed to reallocate memory for response\n");
+        debug_print("Failed to reallocate memory for response\n");
         free(response);
         response = NULL;
         goto cleanup;
@@ -917,12 +931,12 @@ static char *http_get_request(const char *host, const char *path,
       responseSize++;
       response = (char *)realloc(response, responseSize);
       if (!response) {
-        printf("Debug: Failed to reallocate memory for null terminator\n");
+        debug_print("Failed to reallocate memory for null terminator\n");
         goto cleanup;
       }
     }
     response[totalSize] = '\0';
-    printf("Debug: Successfully read response: %d bytes\n", (int)totalSize);
+    debug_print("Successfully read response: %d bytes\n", (int)totalSize);
   }
 
   success = TRUE;
