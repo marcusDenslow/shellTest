@@ -40,6 +40,9 @@ typedef struct {
   char wind_direction[16];
   char pressure[16];
   char icon[16];
+  char city[64];    // Added for complete location info
+  char region[64];  // Added for complete location info
+  char country[64]; // Added for complete location info
 } WeatherData;
 
 // Function to read API key from config file
@@ -144,6 +147,51 @@ static char *http_get_request(const char *host, const char *path,
                               const char *query_params);
 
 /**
+ * Update the LocationData structure with weather API response data
+ * This ensures we capture city, state/region, and country even when searching
+ * by city name
+ */
+static void update_location_from_weather(LocationData *location,
+                                         const char *response) {
+  // Get city name from response (might be more accurate than our search query)
+  char *name = extract_json_string(response, "name");
+  if (name) {
+    if (location->city[0] == '\0' || strcmp(location->city, name) != 0) {
+      // Only update if empty or different from what we already have
+      strncpy(location->city, name, sizeof(location->city) - 1);
+      location->city[sizeof(location->city) - 1] = '\0';
+    }
+    free(name);
+  }
+
+  // Get country from the "sys" object
+  char *sys_json = strstr(response, "\"sys\":");
+  if (sys_json) {
+    // Country code
+    char *country_code = extract_json_string(sys_json, "country");
+    if (country_code) {
+      // Convert country code to full name if empty
+      if (location->country[0] == '\0') {
+        // Map some common country codes
+        if (strcmp(country_code, "US") == 0)
+          strcpy(location->country, "United States");
+        else if (strcmp(country_code, "GB") == 0)
+          strcpy(location->country, "United Kingdom");
+        else if (strcmp(country_code, "CA") == 0)
+          strcpy(location->country, "Canada");
+        else if (strcmp(country_code, "AU") == 0)
+          strcpy(location->country, "Australia");
+        else if (strcmp(country_code, "MX") == 0)
+          strcpy(location->country, "Mexico");
+        else
+          strcpy(location->country, country_code); // Use code if no mapping
+      }
+      free(country_code);
+    }
+  }
+}
+
+/**
  * Command handler for the "weather" command
  */
 int lsh_weather(char **args) {
@@ -167,8 +215,23 @@ int lsh_weather(char **args) {
 
   // Check if a location was provided
   if (args[1] != NULL) {
-    // Use the provided location
-    strcpy(location.city, args[1]);
+    // Handle multi-word city names by concatenating all arguments
+    char full_location[256] = "";
+    int i = 1;
+
+    // Start with the first word
+    strcpy(full_location, args[1]);
+
+    // Add remaining words with spaces in between
+    i = 2;
+    while (args[i] != NULL) {
+      strcat(full_location, " ");
+      strcat(full_location, args[i]);
+      i++;
+    }
+
+    // Use the full location string
+    strcpy(location.city, full_location);
     success = get_weather_data(location.city, &weather);
   } else {
     // Try to detect the user's location by IP
@@ -244,7 +307,10 @@ static int get_location_by_ip(LocationData *location) {
     return 0;
   }
 
-  printf("Debug: Successfully detected location: %s\n", location->city);
+  printf("Debug: Successfully detected location: %s, %s, %s\n", location->city,
+         location->region[0] ? location->region : "N/A",
+         location->country[0] ? location->country : "N/A");
+
   return 1;
 }
 
@@ -295,7 +361,7 @@ static int get_weather_data(const char *location, WeatherData *weather) {
     return 0;
   }
 
-  // Rest of function remains the same
+  // Extract temperature, feels_like, humidity, pressure
   double temp = extract_json_number(main_json, "temp");
   double feels_like = extract_json_number(main_json, "feels_like");
   double humidity = extract_json_number(main_json, "humidity");
@@ -354,13 +420,21 @@ static int get_weather_data(const char *location, WeatherData *weather) {
     printf("Debug: Could not find 'weather' section in response\n");
   }
 
-  free(response);
+  // Extract location data from the response
+  LocationData loc_temp;
+  memset(&loc_temp, 0, sizeof(LocationData));
+  update_location_from_weather(&loc_temp, response);
 
-  // Check if we got the basic data
-  if (weather->temperature[0] == '\0') {
-    printf("Debug: Failed to extract temperature data\n");
-    return 0;
-  }
+  // Copy location data to weather struct for display
+  strncpy(weather->city, loc_temp.city[0] ? loc_temp.city : location,
+          sizeof(weather->city) - 1);
+  weather->city[sizeof(weather->city) - 1] = '\0';
+
+  strncpy(weather->region, loc_temp.region, sizeof(weather->region) - 1);
+  weather->region[sizeof(weather->region) - 1] = '\0';
+
+  strncpy(weather->country, loc_temp.country, sizeof(weather->country) - 1);
+  weather->country[sizeof(weather->country) - 1] = '\0';
 
   printf("Debug: Successfully parsed weather data\n");
   return 1;
@@ -390,17 +464,32 @@ static void display_weather(const LocationData *location,
   int boxWidth = 52;
   int contentWidth = boxWidth - 4; // 2 chars padding on each side
 
-  // Construct location string
+  // Construct location string - prioritize complete location data
   char locationStr[128] = "";
-  if (location->city[0] != '\0') {
+
+  // Use weather struct for location data if available (more accurate from
+  // search)
+  if (weather->city[0] != '\0') {
+    strcat(locationStr, weather->city);
+  } else if (location->city[0] != '\0') {
     strcat(locationStr, location->city);
   }
-  if (location->region[0] != '\0') {
+
+  if (weather->region[0] != '\0') {
+    if (locationStr[0] != '\0')
+      strcat(locationStr, ", ");
+    strcat(locationStr, weather->region);
+  } else if (location->region[0] != '\0') {
     if (locationStr[0] != '\0')
       strcat(locationStr, ", ");
     strcat(locationStr, location->region);
   }
-  if (location->country[0] != '\0') {
+
+  if (weather->country[0] != '\0') {
+    if (locationStr[0] != '\0')
+      strcat(locationStr, ", ");
+    strcat(locationStr, weather->country);
+  } else if (location->country[0] != '\0') {
     if (locationStr[0] != '\0')
       strcat(locationStr, ", ");
     strcat(locationStr, location->country);
