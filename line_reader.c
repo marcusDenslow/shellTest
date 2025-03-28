@@ -35,56 +35,9 @@ int try_bookmark_completion(char *buffer, int position, HANDLE hConsole,
   if (!is_goto && !is_unbookmark)
     return 0;
 
-  // Extract the command and partial bookmark name
-  int cmd_len = is_goto ? 5 : 11;
-  char partial_name[256] = "";
-
-  // Copy the partial bookmark name
-  strncpy(partial_name, buffer + cmd_len, position - cmd_len);
-  partial_name[position - cmd_len] = '\0';
-
-  // Try to find a matching bookmark
-  char *match = find_matching_bookmark(partial_name);
-  if (!match)
-    return 0;
-
-  // We found a match! Replace the partial name with the full bookmark name
-
-  // Get current cursor position
-  CONSOLE_SCREEN_BUFFER_INFO csbi;
-  GetConsoleScreenBufferInfo(hConsole, &csbi);
-
-  // Hide cursor during update
-  CONSOLE_CURSOR_INFO cursorInfo;
-  GetConsoleCursorInfo(hConsole, &cursorInfo);
-  BOOL originalCursorVisible = cursorInfo.bVisible;
-  cursorInfo.bVisible = FALSE;
-  SetConsoleCursorInfo(hConsole, &cursorInfo);
-
-  // Move cursor back to start of bookmark name
-  COORD namePos = promptEndPos;
-  namePos.X += cmd_len;
-  SetConsoleCursorPosition(hConsole, namePos);
-
-  // Clear the partial name and any text after it
-  DWORD written;
-  FillConsoleOutputCharacter(hConsole, ' ', 80 - cmd_len, namePos, &written);
-
-  // Write the complete bookmark name
-  SetConsoleTextAttribute(hConsole, originalAttributes);
-  printf("%s", match);
-
-  // Update buffer with the match
-  strcpy(buffer + cmd_len, match);
-
-  // Restore cursor visibility
-  cursorInfo.bVisible = originalCursorVisible;
-  SetConsoleCursorInfo(hConsole, &cursorInfo);
-
-  // Free the match
-  free(match);
-
-  return 1; // Handled bookmark completion
+  // Let the regular tab completion system handle bookmarks
+  // This will enable proper tab cycling
+  return 0;
 }
 
 /**

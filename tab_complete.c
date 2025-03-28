@@ -958,11 +958,13 @@ char **find_context_suggestions(const char *line, int position,
 
 // Then fix the find_context_matches function:
 
+
 /**
  * Find context-aware matches based on the current command line
+ * Enhanced to be command-aware for better context suggestions
  */
-char **find_context_matches(const char *buffer, int position,
-                            const char *partial_text, int *num_matches) {
+char **find_context_matches(const char *buffer, int position, const char *partial_text, 
+                           int *num_matches) {
   CommandContext ctx;
   parse_command_context(buffer, position, &ctx);
 
@@ -973,85 +975,31 @@ char **find_context_matches(const char *buffer, int position,
   int token_count;
   parse_command_tokens(buffer, position, &tokens, &token_count);
 
-  char **used_commands = NULL;
-  int used_count = 0;
-
-  if (tokens) {
-    // Count filter commands already used
-    for (int i = 0; i < token_count; i++) {
-      for (int j = 0; j < filter_count; j++) {
-        if (strcasecmp(tokens[i], filter_str[j]) == 0) {
-          used_count++;
-        }
-      }
-    }
-
-    // Collect used filter commands
-    if (used_count > 0) {
-      used_commands = (char **)malloc(used_count * sizeof(char *));
-      if (used_commands) {
-        used_count = 0;
-
-        for (int i = 0; i < token_count; i++) {
-          for (int j = 0; j < filter_count; j++) {
-            if (strcasecmp(tokens[i], filter_str[j]) == 0) {
-              used_commands[used_count++] = tokens[i];
-            }
-          }
-        }
-      }
-    }
+  // Extract command name and determine if we're in argument mode
+  char cmd[64] = "";
+  int is_argument = 0;
+  int cmd_end = 0;
+  
+  // Find the first word (the command)
+  while (cmd_end < position && !isspace(buffer[cmd_end])) {
+    cmd_end++;
   }
 
-  // Extract the command and its arguments
-  char cmd[256] = "";
-  char args[MAX_PATH] = "";
-  int arg_index = 0;
-
-  // Find the first token (the command)
-  if (token_count > 0) {
-    strcpy(cmd, tokens[0]);
-
-    // Find the argument index and extract args
-    const char *arg_start = buffer; // Fixed: added const
-    int in_token = 0;
-    int token_idx = 0;
-
-    for (int i = 0; i < position; i++) {
-      if (isspace(buffer[i]) || buffer[i] == '|') {
-        if (in_token) {
-          in_token = 0;
-          token_idx++;
-        }
-      } else if (!in_token) {
-        in_token = 1;
-        if (token_idx == 0) {
-          arg_start = buffer + i;
-        }
-      }
-    }
-
-    // If we're past the command, get the argument index
-    if (token_idx > 0) {
-      arg_index = token_idx;
-
-      // Extract the arguments part
-      char *args_part = strchr(buffer, ' ');
-      if (args_part) {
-        // Skip spaces
-        while (*args_part && isspace(*args_part)) {
-          args_part++;
-        }
-        strncpy(args, args_part, sizeof(args) - 1);
-        args[sizeof(args) - 1] = '\0';
-      }
-    }
+  // Extract the command
+  if (cmd_end > 0 && cmd_end < sizeof(cmd)) {
+    strncpy(cmd, buffer, cmd_end);
+    cmd[cmd_end] = '\0';
   }
 
-  // Special case for "goto" command - suggest bookmark names
-  if (strcasecmp(cmd, "goto") == 0 || strcasecmp(cmd, "unbookmark") == 0) {
-    // If this is the first argument after the command
-    if (arg_index == 1) {
+  // Check if we're past the command and at least one space
+  if (cmd_end > 0 && cmd_end < position && isspace(buffer[cmd_end])) {
+    is_argument = 1;
+  }
+
+  // If we're in argument mode, handle context-specific suggestions
+  if (is_argument) {
+    // Special case for "goto" and "unbookmark" commands - suggest bookmarks
+    if (strcasecmp(cmd, "goto") == 0 || strcasecmp(cmd, "unbookmark") == 0) {
       int bookmark_count;
       char **bookmark_names = get_bookmark_names(&bookmark_count);
 
@@ -1071,8 +1019,7 @@ char **find_context_matches(const char *buffer, int position,
 
         for (int i = 0; i < bookmark_count; i++) {
           if (partial_text[0] == '\0' ||
-              _strnicmp(bookmark_names[i], partial_text,
-                        strlen(partial_text)) == 0) {
+              _strnicmp(bookmark_names[i], partial_text, strlen(partial_text)) == 0) {
             matches[match_count++] = _strdup(bookmark_names[i]);
           }
         }
@@ -1086,14 +1033,58 @@ char **find_context_matches(const char *buffer, int position,
         *num_matches = match_count;
         return matches;
       }
+      return NULL;
     }
+    
+    // Special case for "cd" command - suggest directories only
+    else if (strcasecmp(cmd, "cd") == 0) {
+      return find_directory_matches(partial_text, num_matches);
+    }
+    
+    // Special case for "cat" command - suggest files (prioritizing text files)
+    else if (strcasecmp(cmd, "cat") == 0) {
+      return find_file_matches(partial_text, num_matches);
+    }
+    
+    // Default for other commands - suggest both files and directories
+    return find_matches(partial_text, 0, num_matches);
   }
 
+  // If we're not in argument mode:
   // Check if we're after a pipe
   if (ctx.is_after_pipe) {
-    char **suggestions =
-        get_pipe_suggestions(ctx.cmd_before_pipe, used_commands, used_count,
-                             num_matches); // Fixed: was num_suggestions
+    char **used_commands = NULL;
+    int used_count = 0;
+    
+    // Collect used filter commands
+    if (tokens) {
+      // Count filter commands already used
+      for (int i = 0; i < token_count; i++) {
+        for (int j = 0; j < filter_count; j++) {
+          if (strcasecmp(tokens[i], filter_str[j]) == 0) {
+            used_count++;
+          }
+        }
+      }
+
+      // Collect used filter commands
+      if (used_count > 0) {
+        used_commands = (char **)malloc(used_count * sizeof(char *));
+        if (used_commands) {
+          used_count = 0;
+
+          for (int i = 0; i < token_count; i++) {
+            for (int j = 0; j < filter_count; j++) {
+              if (strcasecmp(tokens[i], filter_str[j]) == 0) {
+                used_commands[used_count++] = tokens[i];
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    char **suggestions = get_pipe_suggestions(ctx.cmd_before_pipe, used_commands, used_count, num_matches);
 
     // Clean up
     if (tokens) {
@@ -1115,9 +1106,6 @@ char **find_context_matches(const char *buffer, int position,
       free(tokens[i]);
     }
     free(tokens);
-  }
-  if (used_commands) {
-    free(used_commands);
   }
 
   // Check if we're in a filter command
@@ -1153,8 +1141,214 @@ char **find_context_matches(const char *buffer, int position,
     }
   }
 
-  // Default - suggest based on partial text
-  return find_matches(ctx.current_token, ctx.token_index == 0, num_matches);
+  // Default - suggest based on partial text - commands only if at beginning of line
+  return find_matches(partial_text, position == strlen(partial_text), num_matches);
+}
+
+/**
+ * Find directory matches for the given partial path
+ * Used for cd command tab completion
+ */
+char **find_directory_matches(const char *partial_text, int *num_matches) {
+  char cwd[1024];
+  char search_dir[1024] = "";
+  char search_pattern[256] = "";
+  char **matches = NULL;
+  int matches_capacity = 10;
+  *num_matches = 0;
+
+  if (!partial_text) {
+    return NULL;
+  }
+
+  // Allocate initial array for matches
+  matches = (char **)malloc(sizeof(char *) * matches_capacity);
+  if (!matches) {
+    fprintf(stderr, "lsh: allocation error in directory tab completion\n");
+    return NULL;
+  }
+
+  // Parse the partial path to separate directory and pattern
+  char *last_slash = strrchr(partial_text, '\\');
+  if (last_slash) {
+    // There's a directory part
+    int dir_len = last_slash - partial_text + 1;
+    strncpy(search_dir, partial_text, dir_len);
+    search_dir[dir_len] = '\0';
+    strcpy(search_pattern, last_slash + 1);
+  } else {
+    // No directory specified, use current directory
+    _getcwd(cwd, sizeof(cwd));
+    strcpy(search_dir, cwd);
+    strcat(search_dir, "\\");
+    strcpy(search_pattern, partial_text);
+  }
+
+  // Prepare for file searching
+  char search_path[1024];
+  strcpy(search_path, search_dir);
+  strcat(search_path, "*");
+
+  WIN32_FIND_DATA findData;
+  HANDLE hFind = FindFirstFile(search_path, &findData);
+
+  if (hFind == INVALID_HANDLE_VALUE) {
+    free(matches);
+    return NULL;
+  }
+
+  // Find all matching directories
+  do {
+    // Skip . and .. directories
+    if (strcmp(findData.cFileName, ".") == 0 ||
+        strcmp(findData.cFileName, "..") == 0) {
+      continue;
+    }
+
+    // Only include directories
+    if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+      // Check if directory matches our pattern (case insensitive)
+      if (_strnicmp(findData.cFileName, search_pattern, strlen(search_pattern)) == 0) {
+        // Add to matches
+        if (*num_matches >= matches_capacity) {
+          matches_capacity *= 2;
+          matches = (char **)realloc(matches, sizeof(char *) * matches_capacity);
+          if (!matches) {
+            fprintf(stderr, "lsh: allocation error in directory tab completion\n");
+            FindClose(hFind);
+            return NULL;
+          }
+        }
+
+        // Just copy the filename
+        matches[*num_matches] = _strdup(findData.cFileName);
+        (*num_matches)++;
+      }
+    }
+  } while (FindNextFile(hFind, &findData));
+
+  FindClose(hFind);
+
+  return matches;
+}
+
+/**
+ * Find file matches for the given partial path
+ * Used for cat command tab completion
+ */
+char **find_file_matches(const char *partial_text, int *num_matches) {
+  char cwd[1024];
+  char search_dir[1024] = "";
+  char search_pattern[256] = "";
+  char **matches = NULL;
+  int matches_capacity = 10;
+  *num_matches = 0;
+
+  if (!partial_text) {
+    return NULL;
+  }
+
+  // Allocate initial array for matches
+  matches = (char **)malloc(sizeof(char *) * matches_capacity);
+  if (!matches) {
+    fprintf(stderr, "lsh: allocation error in file tab completion\n");
+    return NULL;
+  }
+
+  // Parse the partial path to separate directory and pattern
+  char *last_slash = strrchr(partial_text, '\\');
+  if (last_slash) {
+    // There's a directory part
+    int dir_len = last_slash - partial_text + 1;
+    strncpy(search_dir, partial_text, dir_len);
+    search_dir[dir_len] = '\0';
+    strcpy(search_pattern, last_slash + 1);
+  } else {
+    // No directory specified, use current directory
+    _getcwd(cwd, sizeof(cwd));
+    strcpy(search_dir, cwd);
+    strcat(search_dir, "\\");
+    strcpy(search_pattern, partial_text);
+  }
+
+  // Prepare for file searching
+  char search_path[1024];
+  strcpy(search_path, search_dir);
+  strcat(search_path, "*");
+
+  WIN32_FIND_DATA findData;
+  HANDLE hFind = FindFirstFile(search_path, &findData);
+
+  if (hFind == INVALID_HANDLE_VALUE) {
+    free(matches);
+    return NULL;
+  }
+
+  // Find all matching files (prioritize files over directories)
+  do {
+    // Skip . and .. directories
+    if (strcmp(findData.cFileName, ".") == 0 ||
+        strcmp(findData.cFileName, "..") == 0) {
+      continue;
+    }
+
+    // Check if file matches our pattern (case insensitive)
+    if (_strnicmp(findData.cFileName, search_pattern, strlen(search_pattern)) == 0) {
+      // Add to matches - prioritize files
+      if (*num_matches >= matches_capacity) {
+        matches_capacity *= 2;
+        matches = (char **)realloc(matches, sizeof(char *) * matches_capacity);
+        if (!matches) {
+          fprintf(stderr, "lsh: allocation error in file tab completion\n");
+          FindClose(hFind);
+          return NULL;
+        }
+      }
+
+      // Prioritize files by adding them first
+      if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        matches[*num_matches] = _strdup(findData.cFileName);
+        (*num_matches)++;
+      }
+    }
+  } while (FindNextFile(hFind, &findData));
+
+  FindClose(hFind);
+
+  // If we didn't find any files, run the search again to include directories as fallback
+  if (*num_matches == 0) {
+    hFind = FindFirstFile(search_path, &findData);
+    
+    if (hFind != INVALID_HANDLE_VALUE) {
+      do {
+        // Skip . and .. directories
+        if (strcmp(findData.cFileName, ".") == 0 ||
+            strcmp(findData.cFileName, "..") == 0) {
+          continue;
+        }
+
+        // This time include directories too
+        if (_strnicmp(findData.cFileName, search_pattern, strlen(search_pattern)) == 0) {
+          if (*num_matches >= matches_capacity) {
+            matches_capacity *= 2;
+            matches = (char **)realloc(matches, sizeof(char *) * matches_capacity);
+            if (!matches) {
+              fprintf(stderr, "lsh: allocation error in file tab completion\n");
+              FindClose(hFind);
+              return NULL;
+            }
+          }
+
+          matches[*num_matches] = _strdup(findData.cFileName);
+          (*num_matches)++;
+        }
+      } while (FindNextFile(hFind, &findData));
+      
+      FindClose(hFind);
+    }
+  }
+
+  return matches;
 }
 
 /**
@@ -1222,77 +1416,217 @@ char *find_best_match(const char *partial_text) {
 }
 
 /**
- * Find context-aware best match for current input
+ * Context-aware best match finder for current input
+ * Fixed to better understand command argument context
  */
 char *find_context_best_match(const char *buffer, int position) {
   // If empty buffer, nothing to suggest
   if (position == 0)
     return NULL;
 
-  // Find context-aware suggestions
-  int num_suggestions;
-  char **suggestions =
-      find_context_suggestions(buffer, position, &num_suggestions);
+  // Check if we've already typed a command and are now typing an argument
+  int is_argument = 0;
+  char cmd[64] = "";
+  int cmd_end = 0;
 
-  if (suggestions && num_suggestions > 0) {
-    // Find the start of the current word
-    int word_start = position - 1;
-    while (word_start >= 0 && !isspace(buffer[word_start]) &&
-           buffer[word_start] != '|') {
-      word_start--;
-    }
-    word_start++; // Move past the space or pipe
-
-    // Extract the current partial word
-    char partial_word[1024] = "";
-    strncpy(partial_word, buffer + word_start, position - word_start);
-    partial_word[position - word_start] = '\0';
-
-    // Find the best match (case insensitive)
-    char *best_match = NULL;
-    for (int i = 0; i < num_suggestions; i++) {
-      if (_strnicmp(suggestions[i], partial_word, strlen(partial_word)) == 0) {
-        best_match = suggestions[i];
-        break;
-      }
-    }
-
-    if (best_match) {
-      // Create the full suggestion
-      char *full_suggestion = (char *)malloc(position + strlen(best_match) -
-                                             strlen(partial_word) + 1);
-      if (!full_suggestion) {
-        for (int i = 0; i < num_suggestions; i++) {
-          free(suggestions[i]);
-        }
-        free(suggestions);
-        return NULL;
-      }
-
-      // Copy everything before the current word
-      strncpy(full_suggestion, buffer, word_start);
-      full_suggestion[word_start] = '\0';
-
-      // Append the best match
-      strcat(full_suggestion, best_match);
-
-      // Free suggestions array
-      for (int i = 0; i < num_suggestions; i++) {
-        free(suggestions[i]);
-      }
-      free(suggestions);
-
-      return full_suggestion;
-    }
-
-    // Free suggestions if no match found
-    for (int i = 0; i < num_suggestions; i++) {
-      free(suggestions[i]);
-    }
-    free(suggestions);
+  // Find the first word (the command)
+  while (cmd_end < position && !isspace(buffer[cmd_end])) {
+    cmd_end++;
   }
 
-  // Fall back to the original match finding logic
+  // Extract the command
+  if (cmd_end > 0 && cmd_end < sizeof(cmd)) {
+    strncpy(cmd, buffer, cmd_end);
+    cmd[cmd_end] = '\0';
+  }
+
+  // Check if we're past the command and at least one space
+  if (cmd_end > 0 && cmd_end < position && isspace(buffer[cmd_end])) {
+    is_argument = 1;
+  }
+
+  // Find the start of the current word
+  int word_start = position - 1;
+  while (word_start >= 0 && !isspace(buffer[word_start]) &&
+         buffer[word_start] != '\\' && buffer[word_start] != '|') {
+    word_start--;
+  }
+  word_start++; // Move past the space, backslash, or pipe
+
+  // Extract the current partial word
+  char partial_word[1024] = "";
+  strncpy(partial_word, buffer + word_start, position - word_start);
+  partial_word[position - word_start] = '\0';
+
+  // If we're in argument mode, handle differently based on command
+  if (is_argument) {
+    int num_suggestions = 0;
+    char **suggestions = NULL;
+    char *best_match = NULL;
+
+    // Special case for "goto" command - suggest bookmarks
+    if (strcasecmp(cmd, "goto") == 0 || strcasecmp(cmd, "unbookmark") == 0) {
+      int bookmark_count;
+      char **bookmark_names = get_bookmark_names(&bookmark_count);
+
+      if (bookmark_names && bookmark_count > 0) {
+        // Find the best matching bookmark
+        for (int i = 0; i < bookmark_count; i++) {
+          if (_strnicmp(bookmark_names[i], partial_word,
+                        strlen(partial_word)) == 0) {
+            // Create full suggestion with command and matched bookmark
+            best_match =
+                (char *)malloc(strlen(buffer) + strlen(bookmark_names[i]) + 1);
+            if (best_match) {
+              // Copy everything up to the current word
+              strncpy(best_match, buffer, word_start);
+              best_match[word_start] = '\0';
+              // Add the matched bookmark name
+              strcat(best_match, bookmark_names[i]);
+            }
+            break;
+          }
+        }
+
+        // Free bookmark names
+        for (int i = 0; i < bookmark_count; i++) {
+          free(bookmark_names[i]);
+        }
+        free(bookmark_names);
+
+        return best_match;
+      }
+    }
+    // Special case for "cd" command - suggest directories only
+    else if (strcasecmp(cmd, "cd") == 0) {
+      // Custom directory-only search
+      WIN32_FIND_DATA findData;
+      HANDLE hFind;
+      char search_path[1024];
+
+      // Parse the partial path to separate directory and pattern
+      char search_dir[1024] = "";
+      char search_pattern[256] = "";
+
+      char *last_slash = strrchr(partial_word, '\\');
+      if (last_slash) {
+        // There's a directory part
+        int dir_len = last_slash - partial_word + 1;
+        strncpy(search_dir, partial_word, dir_len);
+        search_dir[dir_len] = '\0';
+        strcpy(search_pattern, last_slash + 1);
+      } else {
+        // No directory specified, use current directory
+        char cwd[1024];
+        _getcwd(cwd, sizeof(cwd));
+        strcpy(search_dir, cwd);
+        strcat(search_dir, "\\");
+        strcpy(search_pattern, partial_word);
+      }
+
+      // Prepare search path
+      strcpy(search_path, search_dir);
+      strcat(search_path, "*");
+
+      hFind = FindFirstFile(search_path, &findData);
+      if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+          // Skip . and .. directories
+          if (strcmp(findData.cFileName, ".") == 0 ||
+              strcmp(findData.cFileName, "..") == 0) {
+            continue;
+          }
+
+          // Only include directories
+          if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (_strnicmp(findData.cFileName, search_pattern,
+                          strlen(search_pattern)) == 0) {
+              // We found a matching directory
+              best_match = (char *)malloc(strlen(buffer) +
+                                          strlen(findData.cFileName) + 1);
+              if (best_match) {
+                strncpy(best_match, buffer, word_start);
+                best_match[word_start] = '\0';
+                strcat(best_match, findData.cFileName);
+                break;
+              }
+            }
+          }
+        } while (FindNextFile(hFind, &findData));
+
+        FindClose(hFind);
+        if (best_match) {
+          return best_match;
+        }
+      }
+    }
+    // Special case for "cat" command - prioritize files
+    else if (strcasecmp(cmd, "cat") == 0) {
+      // We'll try to find file matches prioritizing text files
+      // This is simplified - just showing the concept
+      WIN32_FIND_DATA findData;
+      HANDLE hFind;
+      char search_path[1024];
+
+      // Similar directory/pattern parsing...
+      char search_dir[1024] = "";
+      char search_pattern[256] = "";
+
+      char *last_slash = strrchr(partial_word, '\\');
+      if (last_slash) {
+        int dir_len = last_slash - partial_word + 1;
+        strncpy(search_dir, partial_word, dir_len);
+        search_dir[dir_len] = '\0';
+        strcpy(search_pattern, last_slash + 1);
+      } else {
+        char cwd[1024];
+        _getcwd(cwd, sizeof(cwd));
+        strcpy(search_dir, cwd);
+        strcat(search_dir, "\\");
+        strcpy(search_pattern, partial_word);
+      }
+
+      strcpy(search_path, search_dir);
+      strcat(search_path, "*");
+
+      hFind = FindFirstFile(search_path, &findData);
+      if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+          // Skip . and .. directories
+          if (strcmp(findData.cFileName, ".") == 0 ||
+              strcmp(findData.cFileName, "..") == 0) {
+            continue;
+          }
+
+          // Prioritize files over directories
+          if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            if (_strnicmp(findData.cFileName, search_pattern,
+                          strlen(search_pattern)) == 0) {
+              best_match = (char *)malloc(strlen(buffer) +
+                                          strlen(findData.cFileName) + 1);
+              if (best_match) {
+                strncpy(best_match, buffer, word_start);
+                best_match[word_start] = '\0';
+                strcat(best_match, findData.cFileName);
+                break;
+              }
+            }
+          }
+        } while (FindNextFile(hFind, &findData));
+
+        FindClose(hFind);
+        if (best_match) {
+          return best_match;
+        }
+      }
+    }
+
+    // For other commands, fall back to general file/directory suggestion
+    // This would use the existing mechanisms
+  }
+
+  // If we're not in argument mode or didn't find a context-specific match,
+  // fall back to the original match finding logic
   return find_best_match(buffer);
 }
 
@@ -1418,12 +1752,23 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
   }
   word_start++; // Move past the space, backslash, or pipe
 
-  // Extract just the last word from the suggested path
-  const char *lastWord = strrchr(suggestion, ' ');
-  if (lastWord) {
-    lastWord++; // Move past the space
-  } else {
-    lastWord = suggestion;
+  // Check if we're in "goto" or "unbookmark" command
+  char cmd[64] = "";
+  int is_bookmark_cmd = 0;
+
+  // Extract the command (first word)
+  int cmd_end = 0;
+  while (cmd_end < word_start && !isspace(buffer[cmd_end])) {
+    cmd_end++;
+  }
+
+  if (cmd_end < sizeof(cmd)) {
+    strncpy(cmd, buffer, cmd_end);
+    cmd[cmd_end] = '\0';
+
+    if (strcasecmp(cmd, "goto") == 0 || strcasecmp(cmd, "unbookmark") == 0) {
+      is_bookmark_cmd = 1;
+    }
   }
 
   // Extract just the last word from what we've typed so far
@@ -1431,8 +1776,25 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
   strncpy(currentWord, buffer + word_start, position - word_start);
   currentWord[position - word_start] = '\0';
 
+  // Get the suggested completion
+  const char *completionText = NULL;
+
+  if (is_bookmark_cmd) {
+    // For bookmark commands, the suggestion is the full bookmark name
+    completionText = suggestion;
+  } else {
+    // For other cases, extract the last word from the suggestion
+    const char *lastWord = strrchr(suggestion, ' ');
+    if (lastWord) {
+      lastWord++; // Move past the space
+    } else {
+      lastWord = suggestion;
+    }
+    completionText = lastWord;
+  }
+
   // Only display if suggestion starts with what we're typing (case insensitive)
-  if (_strnicmp(lastWord, currentWord, strlen(currentWord)) != 0) {
+  if (_strnicmp(completionText, currentWord, strlen(currentWord)) != 0) {
     return;
   }
 
@@ -1449,7 +1811,7 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
 
   // Prepare the suggestion text (only the part not yet typed)
   char suggestionText[1024] = "";
-  strcpy(suggestionText, lastWord + strlen(currentWord));
+  strcpy(suggestionText, completionText + strlen(currentWord));
 
   // Set text color to gray for suggestion
   SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
