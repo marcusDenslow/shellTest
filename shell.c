@@ -9,6 +9,7 @@
 #include "bookmarks.h" // Added for bookmark support
 #include "builtins.h"
 #include "countdown_timer.h"
+#include "favorite_cities.h"
 #include "filters.h"
 #include "git_integration.h" // Added for Git repository detection
 #include "line_reader.h"
@@ -744,6 +745,8 @@ void lsh_loop(void) {
   // Initialize bookmarks
   init_bookmarks();
 
+  init_favorite_cities();
+
   // Display the welcome banner at startup
   display_welcome_banner();
 
@@ -881,4 +884,6 @@ void lsh_loop(void) {
 
   // Clean up bookmarks on exit
   cleanup_bookmarks();
+
+  cleanup_favorite_cities();
 }

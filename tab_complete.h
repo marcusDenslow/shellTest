@@ -33,7 +33,7 @@ typedef enum {
   ARG_TYPE_BOOKMARK,  // Bookmark names
   ARG_TYPE_ALIAS,     // Alias names
   ARG_TYPE_BOTH,      // Both files and directories
-                      // Add more types as needed
+  ARG_TYPE_FAVORITE_CITY,
 } ArgumentType;
 
 /**

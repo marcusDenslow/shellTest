@@ -9,6 +9,7 @@
 #include "aliases.h"   // Added for alias support
 #include "bookmarks.h" // Added for bookmark support
 #include "common.h"
+#include "favorite_cities.h" // Added for favorite cities support
 #include "structured_data.h" // Add this include
 
 // Syntax highlighting definitions

@@ -4,6 +4,7 @@
  */
 
 #include "weather.h"
+#include "favorite_cities.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -261,12 +262,22 @@ int lsh_weather(char **args) {
     strcpy(location.city, full_location);
     success = get_weather_data(location.city, &weather);
   } else {
-    // Try to detect the user's location by IP
+    // Try to detect the user's location by IP first (original behavior)
     if (get_location_by_ip(&location)) {
       success = get_weather_data(location.city, &weather);
-    } else {
+    }
+    // If IP detection fails, try using a favorite city as fallback
+    else if (favorite_city_count > 0) {
+      strcpy(location.city, favorite_cities[0].name);
+      printf("Could not detect location. Using favorite city: %s\n",
+             location.city);
+      success = get_weather_data(location.city, &weather);
+    }
+    // If both IP detection and favorite cities fail
+    else {
       printf("Failed to detect your location. Please provide a location: "
              "weather <city>\n");
+      printf("Or add favorite cities with: cities add <city>\n");
       return 1;
     }
   }

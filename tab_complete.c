@@ -6,7 +6,8 @@
 #include "tab_complete.h"
 #include "aliases.h" // Added for alias support
 #include "bookmarks.h"
-#include "builtins.h"        // Added to access builtin_str[]
+#include "builtins.h" // Added to access builtin_str[]
+#include "favorite_cities.h"
 #include "filters.h"         // Added for filter commands
 #include "structured_data.h" // Added for table header information
 
@@ -960,10 +961,6 @@ char **find_context_suggestions(const char *line, int position,
 
 #include "bookmarks.h" // Added for bookmark support
 
-/**
- * Find context-aware matches based on the current command line
- * Enhanced to use the command registry for better suggestions
- */
 char **find_context_matches(const char *buffer, int position,
                             const char *partial_text, int *num_matches) {
   // Initialize command registry if not done already
@@ -1076,6 +1073,43 @@ char **find_context_matches(const char *buffer, int position,
           free(alias_names[i]);
         }
         free(alias_names);
+
+        *num_matches = match_count;
+        return matches;
+      }
+    }
+      return NULL;
+
+    case ARG_TYPE_FAVORITE_CITY: {
+      int city_count;
+      char **city_names = get_favorite_city_names(&city_count);
+
+      if (city_names && city_count > 0) {
+        // Filter city names by prefix if any
+        int match_count = 0;
+        char **matches = (char **)malloc(city_count * sizeof(char *));
+
+        if (!matches) {
+          for (int i = 0; i < city_count; i++) {
+            free(city_names[i]);
+          }
+          free(city_names);
+          *num_matches = 0;
+          return NULL;
+        }
+
+        for (int i = 0; i < city_count; i++) {
+          if (partial_text[0] == '\0' || _strnicmp(city_names[i], partial_text,
+                                                   strlen(partial_text)) == 0) {
+            matches[match_count++] = _strdup(city_names[i]);
+          }
+        }
+
+        // Free the original city names
+        for (int i = 0; i < city_count; i++) {
+          free(city_names[i]);
+        }
+        free(city_names);
 
         *num_matches = match_count;
         return matches;
@@ -1916,7 +1950,6 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
 
   // Reset cursor position
   SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
-
   // Restore cursor visibility
   cursorInfo.bVisible = originalCursorVisible;
   SetConsoleCursorInfo(hConsole, &cursorInfo);
@@ -1957,6 +1990,8 @@ void init_command_registry(void) {
   register_command("move", ARG_TYPE_BOTH, "Move files or directories");
   register_command("mv", ARG_TYPE_BOTH, "Move files or directories");
   register_command("unalias", ARG_TYPE_ALIAS, "Remove an alias");
+  register_command("weather", ARG_TYPE_FAVORITE_CITY,
+                   "show weather information for a city");
 
   // Add more commands as needed
 }
