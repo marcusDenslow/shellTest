@@ -27,6 +27,11 @@
 #define ARG_TYPE_DIRECTION 3
 #define ARG_TYPE_PATTERN 4
 
+#define MAX_REGISTERED_COMMANDS 50
+
+static CommandArgInfo command_registry[MAX_REGISTERED_COMMANDS];
+static int command_count = 0;
+
 // Define these struct types:
 typedef struct {
   char *command;           // Command name ("where", "sort-by", etc.)
@@ -953,33 +958,27 @@ char **find_context_suggestions(const char *line, int position,
   return find_matches(ctx.current_token, ctx.token_index == 0, num_suggestions);
 }
 
-// Add this at the top of tab_complete.c, after the existing includes
 #include "bookmarks.h" // Added for bookmark support
-
-// Then fix the find_context_matches function:
-
 
 /**
  * Find context-aware matches based on the current command line
- * Enhanced to be command-aware for better context suggestions
+ * Enhanced to use the command registry for better suggestions
  */
-char **find_context_matches(const char *buffer, int position, const char *partial_text, 
-                           int *num_matches) {
+char **find_context_matches(const char *buffer, int position,
+                            const char *partial_text, int *num_matches) {
+  // Initialize command registry if not done already
+  init_command_registry();
+
   CommandContext ctx;
   parse_command_context(buffer, position, &ctx);
 
   *num_matches = 0;
 
-  // Get used commands to avoid suggesting them again
-  char **tokens;
-  int token_count;
-  parse_command_tokens(buffer, position, &tokens, &token_count);
-
   // Extract command name and determine if we're in argument mode
   char cmd[64] = "";
   int is_argument = 0;
   int cmd_end = 0;
-  
+
   // Find the first word (the command)
   while (cmd_end < position && !isspace(buffer[cmd_end])) {
     cmd_end++;
@@ -998,8 +997,12 @@ char **find_context_matches(const char *buffer, int position, const char *partia
 
   // If we're in argument mode, handle context-specific suggestions
   if (is_argument) {
-    // Special case for "goto" and "unbookmark" commands - suggest bookmarks
-    if (strcasecmp(cmd, "goto") == 0 || strcasecmp(cmd, "unbookmark") == 0) {
+    // Get the argument type for this command
+    ArgumentType arg_type = get_command_arg_type(cmd);
+
+    // Handle based on argument type
+    switch (arg_type) {
+    case ARG_TYPE_BOOKMARK: {
       int bookmark_count;
       char **bookmark_names = get_bookmark_names(&bookmark_count);
 
@@ -1019,7 +1022,8 @@ char **find_context_matches(const char *buffer, int position, const char *partia
 
         for (int i = 0; i < bookmark_count; i++) {
           if (partial_text[0] == '\0' ||
-              _strnicmp(bookmark_names[i], partial_text, strlen(partial_text)) == 0) {
+              _strnicmp(bookmark_names[i], partial_text,
+                        strlen(partial_text)) == 0) {
             matches[match_count++] = _strdup(bookmark_names[i]);
           }
         }
@@ -1033,29 +1037,70 @@ char **find_context_matches(const char *buffer, int position, const char *partia
         *num_matches = match_count;
         return matches;
       }
+    }
       return NULL;
-    }
-    
-    // Special case for "cd" command - suggest directories only
-    else if (strcasecmp(cmd, "cd") == 0) {
+
+    case ARG_TYPE_DIRECTORY:
       return find_directory_matches(partial_text, num_matches);
-    }
-    
-    // Special case for "cat" command - suggest files (prioritizing text files)
-    else if (strcasecmp(cmd, "cat") == 0) {
+
+    case ARG_TYPE_FILE:
       return find_file_matches(partial_text, num_matches);
+
+    case ARG_TYPE_ALIAS: {
+      int alias_count;
+      char **alias_names = get_alias_names(&alias_count);
+
+      if (alias_names && alias_count > 0) {
+        // Filter alias names by prefix if any
+        int match_count = 0;
+        char **matches = (char **)malloc(alias_count * sizeof(char *));
+
+        if (!matches) {
+          for (int i = 0; i < alias_count; i++) {
+            free(alias_names[i]);
+          }
+          free(alias_names);
+          *num_matches = 0;
+          return NULL;
+        }
+
+        for (int i = 0; i < alias_count; i++) {
+          if (partial_text[0] == '\0' || _strnicmp(alias_names[i], partial_text,
+                                                   strlen(partial_text)) == 0) {
+            matches[match_count++] = _strdup(alias_names[i]);
+          }
+        }
+
+        // Free the original alias names
+        for (int i = 0; i < alias_count; i++) {
+          free(alias_names[i]);
+        }
+        free(alias_names);
+
+        *num_matches = match_count;
+        return matches;
+      }
     }
-    
-    // Default for other commands - suggest both files and directories
-    return find_matches(partial_text, 0, num_matches);
+      return NULL;
+
+    case ARG_TYPE_BOTH:
+    case ARG_TYPE_ANY:
+    default:
+      // Default for other commands - suggest both files and directories
+      return find_matches(partial_text, 0, num_matches);
+    }
   }
 
-  // If we're not in argument mode:
   // Check if we're after a pipe
   if (ctx.is_after_pipe) {
     char **used_commands = NULL;
     int used_count = 0;
-    
+
+    // Get used commands to avoid suggesting them again
+    char **tokens;
+    int token_count;
+    parse_command_tokens(buffer, position, &tokens, &token_count);
+
     // Collect used filter commands
     if (tokens) {
       // Count filter commands already used
@@ -1082,30 +1127,23 @@ char **find_context_matches(const char *buffer, int position, const char *partia
           }
         }
       }
-    }
-    
-    char **suggestions = get_pipe_suggestions(ctx.cmd_before_pipe, used_commands, used_count, num_matches);
 
-    // Clean up
-    if (tokens) {
+      // Clean up tokens
       for (int i = 0; i < token_count; i++) {
         free(tokens[i]);
       }
       free(tokens);
     }
+
+    char **suggestions = get_pipe_suggestions(
+        ctx.cmd_before_pipe, used_commands, used_count, num_matches);
+
+    // Clean up
     if (used_commands) {
       free(used_commands);
     }
 
     return suggestions;
-  }
-
-  // Clean up tokens as we don't need them anymore
-  if (tokens) {
-    for (int i = 0; i < token_count; i++) {
-      free(tokens[i]);
-    }
-    free(tokens);
   }
 
   // Check if we're in a filter command
@@ -1141,8 +1179,10 @@ char **find_context_matches(const char *buffer, int position, const char *partia
     }
   }
 
-  // Default - suggest based on partial text - commands only if at beginning of line
-  return find_matches(partial_text, position == strlen(partial_text), num_matches);
+  // Default - suggest based on partial text - commands only if at beginning of
+  // line
+  return find_matches(partial_text, position == strlen(partial_text),
+                      num_matches);
 }
 
 /**
@@ -1208,13 +1248,16 @@ char **find_directory_matches(const char *partial_text, int *num_matches) {
     // Only include directories
     if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
       // Check if directory matches our pattern (case insensitive)
-      if (_strnicmp(findData.cFileName, search_pattern, strlen(search_pattern)) == 0) {
+      if (_strnicmp(findData.cFileName, search_pattern,
+                    strlen(search_pattern)) == 0) {
         // Add to matches
         if (*num_matches >= matches_capacity) {
           matches_capacity *= 2;
-          matches = (char **)realloc(matches, sizeof(char *) * matches_capacity);
+          matches =
+              (char **)realloc(matches, sizeof(char *) * matches_capacity);
           if (!matches) {
-            fprintf(stderr, "lsh: allocation error in directory tab completion\n");
+            fprintf(stderr,
+                    "lsh: allocation error in directory tab completion\n");
             FindClose(hFind);
             return NULL;
           }
@@ -1293,7 +1336,8 @@ char **find_file_matches(const char *partial_text, int *num_matches) {
     }
 
     // Check if file matches our pattern (case insensitive)
-    if (_strnicmp(findData.cFileName, search_pattern, strlen(search_pattern)) == 0) {
+    if (_strnicmp(findData.cFileName, search_pattern, strlen(search_pattern)) ==
+        0) {
       // Add to matches - prioritize files
       if (*num_matches >= matches_capacity) {
         matches_capacity *= 2;
@@ -1315,10 +1359,11 @@ char **find_file_matches(const char *partial_text, int *num_matches) {
 
   FindClose(hFind);
 
-  // If we didn't find any files, run the search again to include directories as fallback
+  // If we didn't find any files, run the search again to include directories as
+  // fallback
   if (*num_matches == 0) {
     hFind = FindFirstFile(search_path, &findData);
-    
+
     if (hFind != INVALID_HANDLE_VALUE) {
       do {
         // Skip . and .. directories
@@ -1328,10 +1373,12 @@ char **find_file_matches(const char *partial_text, int *num_matches) {
         }
 
         // This time include directories too
-        if (_strnicmp(findData.cFileName, search_pattern, strlen(search_pattern)) == 0) {
+        if (_strnicmp(findData.cFileName, search_pattern,
+                      strlen(search_pattern)) == 0) {
           if (*num_matches >= matches_capacity) {
             matches_capacity *= 2;
-            matches = (char **)realloc(matches, sizeof(char *) * matches_capacity);
+            matches =
+                (char **)realloc(matches, sizeof(char *) * matches_capacity);
             if (!matches) {
               fprintf(stderr, "lsh: allocation error in file tab completion\n");
               FindClose(hFind);
@@ -1343,7 +1390,7 @@ char **find_file_matches(const char *partial_text, int *num_matches) {
           (*num_matches)++;
         }
       } while (FindNextFile(hFind, &findData));
-      
+
       FindClose(hFind);
     }
   }
@@ -1416,13 +1463,15 @@ char *find_best_match(const char *partial_text) {
 }
 
 /**
- * Context-aware best match finder for current input
- * Fixed to better understand command argument context
+ * Find context-aware best match for current input using the command registry
  */
 char *find_context_best_match(const char *buffer, int position) {
   // If empty buffer, nothing to suggest
   if (position == 0)
     return NULL;
+
+  // Initialize command registry if needed
+  init_command_registry();
 
   // Check if we've already typed a command and are now typing an argument
   int is_argument = 0;
@@ -1460,14 +1509,15 @@ char *find_context_best_match(const char *buffer, int position) {
 
   // If we're in argument mode, handle differently based on command
   if (is_argument) {
-    int num_suggestions = 0;
-    char **suggestions = NULL;
-    char *best_match = NULL;
+    // Get argument type for the command
+    ArgumentType arg_type = get_command_arg_type(cmd);
 
-    // Special case for "goto" command - suggest bookmarks
-    if (strcasecmp(cmd, "goto") == 0 || strcasecmp(cmd, "unbookmark") == 0) {
+    // Handle based on argument type
+    switch (arg_type) {
+    case ARG_TYPE_BOOKMARK: {
       int bookmark_count;
       char **bookmark_names = get_bookmark_names(&bookmark_count);
+      char *best_match = NULL;
 
       if (bookmark_names && bookmark_count > 0) {
         // Find the best matching bookmark
@@ -1496,13 +1546,14 @@ char *find_context_best_match(const char *buffer, int position) {
 
         return best_match;
       }
-    }
-    // Special case for "cd" command - suggest directories only
-    else if (strcasecmp(cmd, "cd") == 0) {
+    } break;
+
+    case ARG_TYPE_DIRECTORY: {
       // Custom directory-only search
       WIN32_FIND_DATA findData;
       HANDLE hFind;
       char search_path[1024];
+      char *best_match = NULL;
 
       // Parse the partial path to separate directory and pattern
       char search_dir[1024] = "";
@@ -1559,16 +1610,16 @@ char *find_context_best_match(const char *buffer, int position) {
           return best_match;
         }
       }
-    }
-    // Special case for "cat" command - prioritize files
-    else if (strcasecmp(cmd, "cat") == 0) {
-      // We'll try to find file matches prioritizing text files
-      // This is simplified - just showing the concept
+    } break;
+
+    case ARG_TYPE_FILE: {
+      // Search for files
       WIN32_FIND_DATA findData;
       HANDLE hFind;
       char search_path[1024];
+      char *best_match = NULL;
 
-      // Similar directory/pattern parsing...
+      // Parse the partial path
       char search_dir[1024] = "";
       char search_pattern[256] = "";
 
@@ -1619,10 +1670,49 @@ char *find_context_best_match(const char *buffer, int position) {
           return best_match;
         }
       }
-    }
+    } break;
 
-    // For other commands, fall back to general file/directory suggestion
-    // This would use the existing mechanisms
+    case ARG_TYPE_ALIAS: {
+      int alias_count;
+      char **alias_names = get_alias_names(&alias_count);
+      char *best_match = NULL;
+
+      if (alias_names && alias_count > 0) {
+        // Find the best matching alias
+        for (int i = 0; i < alias_count; i++) {
+          if (_strnicmp(alias_names[i], partial_word, strlen(partial_word)) ==
+              0) {
+            // Create full suggestion
+            best_match =
+                (char *)malloc(strlen(buffer) + strlen(alias_names[i]) + 1);
+            if (best_match) {
+              // Copy everything up to the current word
+              strncpy(best_match, buffer, word_start);
+              best_match[word_start] = '\0';
+              // Add the matched alias name
+              strcat(best_match, alias_names[i]);
+            }
+            break;
+          }
+        }
+
+        // Free alias names
+        for (int i = 0; i < alias_count; i++) {
+          free(alias_names[i]);
+        }
+        free(alias_names);
+
+        if (best_match)
+          return best_match;
+      }
+    } break;
+
+    case ARG_TYPE_BOTH:
+    case ARG_TYPE_ANY:
+    default:
+      // Fall back to general matching
+      break;
+    }
   }
 
   // If we're not in argument mode or didn't find a context-specific match,
@@ -1830,4 +1920,55 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
   // Restore cursor visibility
   cursorInfo.bVisible = originalCursorVisible;
   SetConsoleCursorInfo(hConsole, &cursorInfo);
+}
+
+void register_command(const char *cmd, ArgumentType type, const char *desc) {
+  if (command_count < MAX_REGISTERED_COMMANDS) {
+    command_registry[command_count].command = _strdup(cmd);
+    command_registry[command_count].arg_type = type;
+    command_registry[command_count].description = desc ? _strdup(desc) : NULL;
+    command_count++;
+  }
+}
+
+/**
+ * Initialize command registry with all known commands
+ */
+void init_command_registry(void) {
+  // Only initialize once
+  static int initialized = 0;
+  if (initialized)
+    return;
+  initialized = 1;
+
+  // Existing commands with specific argument types
+  register_command("goto", ARG_TYPE_BOOKMARK,
+                   "Change to a bookmarked directory");
+  register_command("unbookmark", ARG_TYPE_BOOKMARK, "Remove a bookmark");
+  register_command("cd", ARG_TYPE_DIRECTORY, "Change directory");
+  register_command("cat", ARG_TYPE_FILE, "Display file contents");
+
+  // New commands to add
+  register_command("rmdir", ARG_TYPE_DIRECTORY, "Remove directory");
+  register_command("del", ARG_TYPE_FILE, "Delete files");
+  register_command("rm", ARG_TYPE_FILE, "Remove files");
+  register_command("copy", ARG_TYPE_BOTH, "Copy files or directories");
+  register_command("cp", ARG_TYPE_BOTH, "Copy files or directories");
+  register_command("move", ARG_TYPE_BOTH, "Move files or directories");
+  register_command("mv", ARG_TYPE_BOTH, "Move files or directories");
+  register_command("unalias", ARG_TYPE_ALIAS, "Remove an alias");
+
+  // Add more commands as needed
+}
+
+/**
+ * Get the argument type for a command
+ */
+ArgumentType get_command_arg_type(const char *cmd) {
+  for (int i = 0; i < command_count; i++) {
+    if (strcasecmp(command_registry[i].command, cmd) == 0) {
+      return command_registry[i].arg_type;
+    }
+  }
+  return ARG_TYPE_ANY; // Default to any
 }

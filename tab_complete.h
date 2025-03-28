@@ -26,6 +26,30 @@ typedef struct {
   char current_operator[16]; // Current operator if known
 } CommandContext;
 
+typedef enum {
+  ARG_TYPE_ANY,       // Any argument
+  ARG_TYPE_FILE,      // Files only
+  ARG_TYPE_DIRECTORY, // Directories only
+  ARG_TYPE_BOOKMARK,  // Bookmark names
+  ARG_TYPE_ALIAS,     // Alias names
+  ARG_TYPE_BOTH,      // Both files and directories
+                      // Add more types as needed
+} ArgumentType;
+
+/**
+ * Structure for command argument type information
+ */
+typedef struct {
+  char *command;         // Command name
+  ArgumentType arg_type; // Expected argument type
+  char *description;     // Optional description
+} CommandArgInfo;
+
+// Function declarations for command registry
+void init_command_registry(void);
+ArgumentType get_command_arg_type(const char *cmd);
+void register_command(const char *cmd, ArgumentType type, const char *desc);
+
 /**
  * Parse command context from a command line
  *

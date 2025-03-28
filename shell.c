@@ -13,6 +13,7 @@
 #include "git_integration.h" // Added for Git repository detection
 #include "line_reader.h"
 #include "structured_data.h"
+#include "tab_complete.h" // Added for tab completion support
 #include <stdio.h>
 #include <time.h> // Added for time functions
 //
