@@ -793,11 +793,16 @@ static void display_grep_results() {
   SetConsoleTextAttribute(hConsole, originalAttrs);
   SetConsoleMode(hStdin, originalMode);
 
-  // Clear the screen
+  // Clear the screen completely to remove all previous content
   system("cls");
 
-  // Return cursor to original position
-  SetConsoleCursorPosition(hConsole, originalCursorPos);
+  // Position cursor precisely at the top-left of the screen (0,0)
+  // This ensures the next prompt will start from the top
+  COORD topPos = {0, 0};
+  SetConsoleCursorPosition(hConsole, topPos);
+
+  // Print a blank line to ensure proper spacing for the prompt
+  printf("\n");
 }
 
 /**
