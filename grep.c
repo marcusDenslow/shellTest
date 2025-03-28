@@ -431,8 +431,8 @@ static void display_grep_results() {
     // Position at the start of the display area
     SetConsoleCursorPosition(hConsole, displayAreaStart);
 
-    // Clear display area only (not the title)
-    for (int y = displayAreaStart.Y; y < displayAreaStart.Y + list_height + 4;
+    // Clear entire display area including footer and navigation
+    for (int y = displayAreaStart.Y; y < displayAreaStart.Y + list_height + 3;
          y++) {
       COORD clearPos = {0, y};
       DWORD written;
@@ -693,14 +693,21 @@ static void display_grep_results() {
       printf("─");
     printf("\n");
 
-    // Show currently selected file
+    // Show currently selected file with absolute path
     SetConsoleTextAttribute(hConsole, COLOR_INFO);
-    printf("File: %s\n", result->filename);
+
+    // Get absolute path for display
+    char absolutePath[MAX_PATH];
+    if (_fullpath(absolutePath, result->filename, MAX_PATH) != NULL) {
+      printf("File: %s\n", absolutePath);
+    } else {
+      printf("File: %s\n", result->filename);
+    }
 
     // Show navigation help
     SetConsoleTextAttribute(hConsole, originalAttrs);
-    printf("Navigation: TAB/UP/DOWN - Next/Prev  ENTER - View File  ESC/Q - "
-           "Exit\n");
+    printf("Navigation: TAB/j/DOWN - Next  SHIFT+TAB/k/UP - Prev  ENTER - View "
+           "File  ESC/Q - Exit\n");
 
     // Restore cursor visibility
     cursorInfo.bVisible = originalCursorVisible;
@@ -744,12 +751,25 @@ static void display_grep_results() {
           // Down arrow - Next result
           grep_results.current_index =
               (grep_results.current_index + 1) % grep_results.count;
+        } else if (keyCode == 'J') {
+          // j key - Next result (same as Down arrow)
+          grep_results.current_index =
+              (grep_results.current_index + 1) % grep_results.count;
+        } else if (keyCode == 'K') {
+          // k key - Previous result (same as Up arrow)
+          if (grep_results.current_index > 0) {
+            grep_results.current_index--;
+          } else {
+            grep_results.current_index = grep_results.count - 1;
+          }
         } else if (keyCode == VK_RETURN) {
           // Enter - Show full file in detail view
           show_file_detail_view(result);
 
-          // Redraw the static title after returning from detail view
+          // Completely redraw the UI to fix duplicate lines issue
           system("cls");
+
+          // Redraw the static title
           SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
           printf("Grep Results (%d matches)\n", grep_results.count);
 
@@ -758,6 +778,9 @@ static void display_grep_results() {
           for (int i = 0; i < console_width; i++)
             printf("─");
           printf("\n\n");
+
+          // Reset display position to ensure clean redraw
+          SetConsoleCursorPosition(hConsole, displayAreaStart);
         } else if (keyCode == VK_ESCAPE || keyCode == 'Q') {
           // Escape or Q - Exit results view
           grep_results.is_active = FALSE;
