@@ -64,8 +64,9 @@ void ensure_status_bar_space(HANDLE hConsole) {
     return;
   }
 
-  // If cursor is on the bottom line (or second-to-last line), we need to scroll
-  if (csbi.dwCursorPosition.Y >= csbi.srWindow.Bottom - 1) {
+  // We want at least 1 blank line between text and status bar
+  // If cursor is on the bottom line or second-to-last line, we need to scroll
+  if (csbi.dwCursorPosition.Y >= csbi.srWindow.Bottom - 2) {
     // First clear the status bar if it exists
     COORD statusPos = {0, csbi.srWindow.Bottom};
     DWORD written;
@@ -74,12 +75,21 @@ void ensure_status_bar_space(HANDLE hConsole) {
     FillConsoleOutputAttribute(hConsole, g_normal_attributes, csbi.dwSize.X,
                                statusPos, &written);
 
-    // Create a small scroll rectangle - everything except the status bar line
+    // Add a blank line above status bar for spacing
+    COORD blankLinePos = {0, csbi.srWindow.Bottom - 1};
+    FillConsoleOutputCharacter(hConsole, ' ', csbi.dwSize.X, blankLinePos,
+                               &written);
+    FillConsoleOutputAttribute(hConsole, g_normal_attributes, csbi.dwSize.X,
+                               blankLinePos, &written);
+
+    // Create a small scroll rectangle - everything except the status bar and
+    // spacing lines
     SMALL_RECT scrollRect;
     scrollRect.Left = 0;
     scrollRect.Top = csbi.srWindow.Top;
     scrollRect.Right = csbi.dwSize.X - 1;
-    scrollRect.Bottom = csbi.srWindow.Bottom - 1; // Exclude status bar line
+    scrollRect.Bottom =
+        csbi.srWindow.Bottom - 2; // Exclude status bar and spacing line
 
     // The coordinate to move the rectangle to
     COORD destOrigin;
@@ -342,7 +352,7 @@ int init_status_bar(HANDLE hConsole) {
 
 /**
  * Add padding above the status bar to avoid a cramped UI
- * This ensures there's at least one blank line between output and prompt
+ * This ensures there are at least two blank lines between output and prompt
  */
 void add_padding_before_prompt(HANDLE hConsole) {
   // Get current console information
@@ -351,14 +361,24 @@ void add_padding_before_prompt(HANDLE hConsole) {
     return;
   }
 
-  // Check if we need padding (if cursor is directly above status bar)
-  if (csbi.dwCursorPosition.Y == csbi.srWindow.Bottom - 1) {
-    // Add a newline to create space
-    printf("\n");
+  // We want 2 lines of padding, so check if cursor is within 2 lines of status
+  // bar The status bar is at srWindow.Bottom, so check for Bottom-1 and
+  // Bottom-2
+  const int DESIRED_PADDING = 2; // Change this to increase/decrease padding
+  int current_padding = csbi.srWindow.Bottom - csbi.dwCursorPosition.Y;
 
-    // After adding newline, ensure status bar space again
-    // This will make sure we don't push the status bar off screen
-    ensure_status_bar_space(hConsole);
+  if (current_padding < DESIRED_PADDING) {
+    // Calculate how many newlines we need to add to get desired padding
+    int newlines_needed = DESIRED_PADDING - current_padding;
+
+    // Add the required number of newlines
+    for (int i = 0; i < newlines_needed; i++) {
+      printf("\n");
+
+      // After each newline, ensure status bar space to prevent pushing it off
+      // screen
+      ensure_status_bar_space(hConsole);
+    }
 
     // Update status bar position
     check_console_resize(hConsole);
@@ -757,14 +777,20 @@ void lsh_loop(void) {
     // Clear git_info for this iteration
     git_info[0] = '\0';
 
-    // Always update the status bar with the current window dimensions
+    // Get current console info
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
       g_status_line = csbi.srWindow.Bottom;
       g_console_width = csbi.dwSize.X;
+    }
 
-      // Check if we need to scroll to make room for the status bar
-      ensure_status_bar_space(hConsole);
+    // CRUCIAL: Make sure there's at least one line between prompt and status
+    // bar
+    if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+      // If cursor is too close to bottom, add newlines
+      if (csbi.srWindow.Bottom - csbi.dwCursorPosition.Y < 2) {
+        printf("\n");
+      }
     }
 
     // Get current directory for the prompt
@@ -792,7 +818,10 @@ void lsh_loop(void) {
                  username, RESET, BLUE, current_dir, RESET);
       }
 
-      // Print prompt immediately
+      // Ensure we still have room for status bar after prompt
+      ensure_status_bar_space(hConsole);
+
+      // Print prompt
       printf("%s -> ", prompt_path);
       fflush(stdout);
 
@@ -887,3 +916,53 @@ void lsh_loop(void) {
 
   cleanup_favorite_cities();
 }
+
+/**
+ * This function makes sure we always have enough space for status bar
+ * Modified to maintain better separation between prompt and status bar
+ */
+// void ensure_status_bar_space(HANDLE hConsole) {
+//   CONSOLE_SCREEN_BUFFER_INFO csbi;
+//   if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+//     return;
+//   }
+//
+//   // We want at least 2 lines between cursor and bottom of window
+//   // 1 for the cursor line, 1 for separation
+//   if (csbi.dwCursorPosition.Y >= csbi.srWindow.Bottom - 1) {
+//     // First clear the status bar if it exists
+//     COORD statusPos = {0, csbi.srWindow.Bottom};
+//     DWORD written;
+//     FillConsoleOutputCharacter(hConsole, ' ', csbi.dwSize.X, statusPos,
+//                                &written);
+//     FillConsoleOutputAttribute(hConsole, g_normal_attributes, csbi.dwSize.X,
+//                                statusPos, &written);
+//
+//     // Create a scroll rectangle - everything except the status bar
+//     SMALL_RECT scrollRect;
+//     scrollRect.Left = 0;
+//     scrollRect.Top = csbi.srWindow.Top;
+//     scrollRect.Right = csbi.dwSize.X - 1;
+//     scrollRect.Bottom = csbi.srWindow.Bottom - 1; // Exclude status bar
+//
+//     // The coordinate to move the rectangle to
+//     COORD destOrigin;
+//     destOrigin.X = 0;
+//     destOrigin.Y = csbi.srWindow.Top - 1; // Move up one line
+//
+//     // Fill character for the vacated lines
+//     CHAR_INFO fill;
+//     fill.Char.AsciiChar = ' ';
+//     fill.Attributes = g_normal_attributes;
+//
+//     // Scroll the window contents up
+//     ScrollConsoleScreenBuffer(hConsole, &scrollRect, NULL, destOrigin,
+//     &fill);
+//
+//     // Update cursor position
+//     COORD newCursorPos;
+//     newCursorPos.X = csbi.dwCursorPosition.X;
+//     newCursorPos.Y = csbi.dwCursorPosition.Y - 1;
+//     SetConsoleCursorPosition(hConsole, newCursorPos);
+//   }
+// }

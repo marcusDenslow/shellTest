@@ -1689,45 +1689,55 @@ int lsh_cd(char **args) {
   return 1;
 }
 
-// Clear the screen
+// Clear the screen completely including scrollback buffer
 int lsh_clear(char **args) {
-  // Get the handle to the console
-  HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  // Method 1: Use system cls command - simplest and most reliable approach for
+  // completely clearing the screen This will completely clear the console
+  // including scrollback history
+  int result = system("cls");
 
-  if (hConsole == INVALID_HANDLE_VALUE) {
-    perror("lsh: failed to get console handle");
-    return 1;
-  }
+  // THIS IS HERE IF I NEED IT LATER. THE SYSTEM CLS IS WORKING FOR ALL THE
+  // TERMINALS I TESTED (ATLEAST ON WINDOWS) but this could come in handy later
 
-  // Get console information
-  CONSOLE_SCREEN_BUFFER_INFO csbi;
-  if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
-    perror("lsh: failed to get console info");
-    return 1;
-  }
-
-  // Calculate total cells in console
-  DWORD cellCount = csbi.dwSize.X * csbi.dwSize.Y;
-
-  // Fill the entire buffer with spaces
-  DWORD count;
-  COORD homeCoords = {0, 0};
-
-  if (!FillConsoleOutputCharacter(hConsole, ' ', cellCount, homeCoords,
-                                  &count)) {
-    perror("lsh: failed to fill console");
-    return 1;
-  }
-
-  // Fill the entire buffer with the current attributes
-  if (!FillConsoleOutputAttribute(hConsole, csbi.wAttributes, cellCount,
-                                  homeCoords, &count)) {
-    perror("lsh: failed to set console attributes");
-    return 1;
-  }
-
-  // Move the cursor to home position
-  SetConsoleCursorPosition(hConsole, homeCoords);
+  // if (result != 0) {
+  //   // If system command fails, fall back to manual clearing
+  //   HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  //
+  //   if (hConsole == INVALID_HANDLE_VALUE) {
+  //     perror("lsh: failed to get console handle");
+  //     return 1;
+  //   }
+  //
+  //   // Get console information
+  //   CONSOLE_SCREEN_BUFFER_INFO csbi;
+  //   if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+  //     perror("lsh: failed to get console info");
+  //     return 1;
+  //   }
+  //
+  //   // Calculate total cells in console
+  //   DWORD cellCount = csbi.dwSize.X * csbi.dwSize.Y;
+  //
+  //   // Fill the entire buffer with spaces
+  //   DWORD count;
+  //   COORD homeCoords = {0, 0};
+  //
+  //   if (!FillConsoleOutputCharacter(hConsole, ' ', cellCount, homeCoords,
+  //                                   &count)) {
+  //     perror("lsh: failed to fill console");
+  //     return 1;
+  //   }
+  //
+  //   // Fill the entire buffer with the current attributes
+  //   if (!FillConsoleOutputAttribute(hConsole, csbi.wAttributes, cellCount,
+  //                                   homeCoords, &count)) {
+  //     perror("lsh: failed to set console attributes");
+  //     return 1;
+  //   }
+  //
+  //   // Move the cursor to home position
+  //   SetConsoleCursorPosition(hConsole, homeCoords);
+  // }
 
   return 1;
 }
