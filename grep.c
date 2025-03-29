@@ -88,11 +88,21 @@ void show_file_detail_view(GrepResult *result);
  */
 int lsh_grep(char **args) {
   if (args[1] == NULL) {
-    printf("Usage: grep [options] pattern [file/directory]\n");
+    printf("Usage: grep [options] pattern_words... [--file "
+           "file_or_directory...]\n");
     printf("Options:\n");
     printf("  -n, --line-numbers  Show line numbers\n");
     printf("  -i, --ignore-case   Ignore case distinctions\n");
     printf("  -r, --recursive     Search directories recursively\n");
+    printf("  --file              Specify files/directories to search "
+           "(otherwise searches current dir)\n");
+    printf("\nExamples:\n");
+    printf("  grep #include \"common.h\"       - Search for '#include "
+           "\"common.h\"' in current directory\n");
+    printf("  grep -i hello world            - Search for 'hello world' "
+           "case-insensitively\n");
+    printf("  grep TODO --file *.c           - Search for 'TODO' in all .c "
+           "files\n");
     return 1;
   }
 
@@ -107,34 +117,76 @@ int lsh_grep(char **args) {
     if (strcmp(args[arg_index], "-n") == 0 ||
         strcmp(args[arg_index], "--line-numbers") == 0) {
       line_numbers = 1;
+      arg_index++;
     } else if (strcmp(args[arg_index], "-i") == 0 ||
                strcmp(args[arg_index], "--ignore-case") == 0) {
       ignore_case = 1;
+      arg_index++;
     } else if (strcmp(args[arg_index], "-r") == 0 ||
                strcmp(args[arg_index], "--recursive") == 0) {
       recursive = 1;
+      arg_index++;
+    } else if (strcmp(args[arg_index], "--file") == 0) {
+      // Stop here - this marks the beginning of file arguments
+      break;
     } else {
       printf("grep: unknown option: %s\n", args[arg_index]);
       return 1;
     }
-    arg_index++;
   }
 
-  // After options, we need a pattern at minimum
+  // Check if we have any arguments left for the pattern
   if (args[arg_index] == NULL) {
     printf("grep: missing pattern\n");
     return 1;
   }
 
-  // Get pattern
-  const char *pattern = args[arg_index++];
+  // Collect all arguments into the pattern until we hit --file or end of args
+  char pattern_buffer[4096] = "";
+  int pattern_start_index = arg_index;
+
+  // Find where the file args start (if any)
+  int file_args_start = -1;
+  for (int i = arg_index; args[i] != NULL; i++) {
+    if (strcmp(args[i], "--file") == 0) {
+      file_args_start = i + 1; // Start right after the --file flag
+      break;
+    }
+  }
+
+  // If we found --file, only use args up to that point for the pattern
+  int pattern_end_index = (file_args_start > 0) ? file_args_start - 2 : -1;
+
+  // If we didn't find --file, use all remaining args for the pattern
+  if (pattern_end_index < 0) {
+    while (args[arg_index] != NULL) {
+      // Add space between pattern parts except before the first one
+      if (arg_index > pattern_start_index) {
+        strcat(pattern_buffer, " ");
+      }
+      strcat(pattern_buffer, args[arg_index]);
+      arg_index++;
+    }
+  } else {
+    // Use only args up to the --file flag for the pattern
+    for (int i = pattern_start_index; i <= pattern_end_index; i++) {
+      // Add space between pattern parts except before the first one
+      if (i > pattern_start_index) {
+        strcat(pattern_buffer, " ");
+      }
+      strcat(pattern_buffer, args[i]);
+    }
+    arg_index = file_args_start; // Move to the file arguments
+  }
+
+  const char *pattern = pattern_buffer;
 
   // Reset grep results if any previous search was done
   free_grep_results();
 
-  // Check if a file/directory was specified
-  if (args[arg_index] == NULL) {
-    // No file specified, search current directory
+  // Check if a file/directory was specified after --file
+  if (file_args_start < 0 || args[file_args_start] == NULL) {
+    // No files specified, search current directory
     search_directory_collect(".", pattern, line_numbers, ignore_case,
                              recursive);
   } else {
@@ -161,11 +213,12 @@ int lsh_grep(char **args) {
 
   // Display the interactive results if any were found
   if (grep_results.count > 0) {
-    printf("Found %d matches. Press TAB to navigate through results...\n",
-           grep_results.count);
+    printf("Found %d matches for pattern: \"%s\"\n", grep_results.count,
+           pattern);
+    printf("Press TAB to navigate through results...\n");
     display_grep_results();
   } else {
-    printf("No matches found\n");
+    printf("No matches found for pattern: \"%s\"\n", pattern);
   }
 
   // Clean up
@@ -548,7 +601,8 @@ static void display_grep_results() {
       list_height = 5; // Minimum reasonable size
 
     // Calculate preview area - completely separate from list
-    int preview_top = 3;
+    int preview_top =
+        5; // Increased from 3 to accommodate file path and empty line
     int preview_height = 20; // Increased to show more context lines
 
     // Make sure preview area fits in the console
@@ -659,6 +713,60 @@ static void display_grep_results() {
                                  (COORD){left_width + 3, preview_top + i});
         printf("%-*s", right_width, "");
       }
+
+      // Get current result's filename for display
+      GrepResult *current = &grep_results.results[grep_results.current_index];
+
+      // Extract directory and filename components
+      char *filename = current->filename;
+      char dirAndFile[MAX_PATH] = {0};
+
+      // Find the last backslash
+      char *lastSlash = strrchr(filename, '\\');
+      if (lastSlash) {
+        // Get the filename part (after last backslash)
+        char *filenamePart = lastSlash + 1;
+
+        // Get directory part (everything before last backslash)
+        char dirPart[MAX_PATH] = {0};
+        int dirLen = (int)(lastSlash - filename);
+        strncpy(dirPart, filename, dirLen);
+        dirPart[dirLen] = '\0';
+
+        // Find the last directory name (after the second-last backslash)
+        char *secondLastSlash = strrchr(dirPart, '\\');
+        if (secondLastSlash) {
+          // Use just the last directory name
+          snprintf(dirAndFile, sizeof(dirAndFile), "%s/%s", secondLastSlash + 1,
+                   filenamePart);
+        } else {
+          // Use the entire directory part
+          snprintf(dirAndFile, sizeof(dirAndFile), "%s/%s", dirPart,
+                   filenamePart);
+        }
+      } else {
+        // No directory separator found, just use filename
+        snprintf(dirAndFile, sizeof(dirAndFile), "%s", filename);
+      }
+
+      // Clear the entire line first
+      SetConsoleCursorPosition(hConsole,
+                               (COORD){left_width + 3, preview_top - 2});
+      // Print enough spaces to clear any previous content
+      for (int i = 0; i < right_width; i++) {
+        printf(" ");
+      }
+
+      // Draw file path first - now with cleared line
+      SetConsoleCursorPosition(hConsole,
+                               (COORD){left_width + 3, preview_top - 2});
+      SetConsoleTextAttribute(hConsole, COLOR_INFO);
+      printf("File: %s", dirAndFile);
+
+      // Empty line between path and preview title
+      SetConsoleCursorPosition(hConsole,
+                               (COORD){left_width + 3, preview_top - 1});
+      printf(" ");
 
       // Draw preview title
       SetConsoleCursorPosition(hConsole, (COORD){left_width + 3, preview_top});
@@ -781,17 +889,12 @@ static void display_grep_results() {
     for (int i = 0; i < console_width; i++)
       printf("─");
 
-    // Display current file info
+    // Clear the file info line (since we now show it at the top of preview)
     SetConsoleCursorPosition(hConsole, (COORD){0, 4 + list_height});
-    SetConsoleTextAttribute(hConsole, COLOR_INFO);
-    GrepResult *current = &grep_results.results[grep_results.current_index];
-    char absolutePath[MAX_PATH];
-    if (_fullpath(absolutePath, current->filename, MAX_PATH) != NULL) {
-      printf("File: %-*s (Line %d)", console_width - 20, absolutePath,
-             current->line_number);
-    } else {
-      printf("File: %-*s (Line %d)", console_width - 20, current->filename,
-             current->line_number);
+    SetConsoleTextAttribute(hConsole, originalAttrs);
+    // Print spaces to clear the line
+    for (int i = 0; i < console_width; i++) {
+      printf(" ");
     }
 
     // Navigation help - updated for swapped keys
