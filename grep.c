@@ -13,7 +13,8 @@
 #define COLOR_INFO FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY
 #define COLOR_RESULT_HIGHLIGHT                                                 \
   FOREGROUND_GREEN | FOREGROUND_INTENSITY // Renamed to avoid conflict
-#define COLOR_BOX FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY
+#define COLOR_BOX                                                              \
+  FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED | FOREGROUND_INTENSITY
 
 // Structure to hold a single grep result
 typedef struct {
@@ -344,161 +345,285 @@ static void search_directory_collect(const char *directory, const char *pattern,
   FindClose(hFind);
 }
 
-static void print_file_preview(HANDLE hConsole, GrepResult *match,
-                               WORD originalAttrs, int right_width,
-                               int left_width);
-
 /**
  * Helper function to print the file preview for a grep result
- * Forward declaration
+ * Completely rewritten to fix display issues
  */
 static void print_file_preview(HANDLE hConsole, GrepResult *match,
                                WORD originalAttrs, int right_width,
-                               int left_width);
+                               int left_width) {
+  // Get the file path
+  char *filename = match->filename;
+
+  // Try to open the file for preview
+  FILE *preview_file = fopen(filename, "r");
+  if (!preview_file) {
+    // If we can't open the file, just show the matched text
+    SetConsoleTextAttribute(hConsole, originalAttrs);
+    printf("<Could not open file>");
+    return;
+  }
+
+  // Set up variables for context display
+  int target_line = match->line_number;
+  int context_lines = 2; // Reduced context to avoid display issues - show just
+                         // 2 lines before/after
+  int start_line =
+      (target_line <= context_lines) ? 1 : target_line - context_lines;
+  int end_line = target_line + context_lines;
+  int current_line = 1;
+  char line_buffer[512];
+
+  // We'll collect context lines first, then display them
+  char context_lines_text[5][256] = {
+      0}; // Max 5 lines (2 before, match, 2 after)
+  int lines_collected = 0;
+
+  // Skip to start line
+  while (current_line < start_line &&
+         fgets(line_buffer, sizeof(line_buffer), preview_file)) {
+    current_line++;
+  }
+
+  // Collect context lines
+  while (current_line <= end_line &&
+         fgets(line_buffer, sizeof(line_buffer), preview_file) &&
+         lines_collected < 5) {
+    // Remove newline
+    size_t len = strlen(line_buffer);
+    if (len > 0 && line_buffer[len - 1] == '\n') {
+      line_buffer[len - 1] = '\0';
+      len--;
+    }
+
+    // Truncate line if too long to fit in display
+    int max_display_width = right_width - 8; // Leave some margin
+    if (max_display_width < 20)
+      max_display_width = 20; // Minimum width
+
+    if ((int)len > max_display_width) {
+      line_buffer[max_display_width - 3] = '.';
+      line_buffer[max_display_width - 2] = '.';
+      line_buffer[max_display_width - 1] = '.';
+      line_buffer[max_display_width] = '\0';
+    }
+
+    // Store the line with its line number
+    snprintf(context_lines_text[lines_collected], 256, "%4d| %s", current_line,
+             line_buffer);
+
+    lines_collected++;
+    current_line++;
+  }
+
+  fclose(preview_file);
+
+  // Now display the collected lines
+  if (lines_collected > 0) {
+    int match_line_idx = target_line - start_line;
+
+    for (int i = 0; i < lines_collected; i++) {
+      if (i > 0) {
+        // Move to next line and add separator for each line after the first
+        printf("\n%*s│ ", left_width, "");
+      }
+
+      if (i == match_line_idx) {
+        // This is the match line - add highlight
+        SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
+        printf("► ");
+
+        // Add match highlighting within the line
+        char *line_text = context_lines_text[i];
+        char *line_content_start = strchr(line_text, '|');
+
+        if (line_content_start) {
+          line_content_start += 2; // Skip "| "
+
+          // Try to locate the match text in the line
+          char match_text[256] = {0};
+          strncpy(match_text, match->line_content + match->match_start,
+                  match->match_length < 255 ? match->match_length : 255);
+          match_text[match->match_length < 255 ? match->match_length : 255] =
+              '\0';
+
+          char *match_in_line = strstr(line_content_start, match_text);
+
+          if (match_in_line) {
+            // Print before match
+            int prefix_len = match_in_line - line_content_start;
+            SetConsoleTextAttribute(hConsole, originalAttrs);
+            printf("%.*s", prefix_len + (line_content_start - line_text),
+                   line_text);
+
+            // Print match with highlight
+            SetConsoleTextAttribute(hConsole, COLOR_MATCH);
+            printf("%.*s", match->match_length, match_in_line);
+
+            // Print rest of line
+            SetConsoleTextAttribute(hConsole, originalAttrs);
+            printf("%s", match_in_line + match->match_length);
+          } else {
+            // Just print the whole line if match not found
+            SetConsoleTextAttribute(hConsole, originalAttrs);
+            printf("%s", line_text);
+          }
+        } else {
+          // Just print the line if pipe not found
+          SetConsoleTextAttribute(hConsole, originalAttrs);
+          printf("%s", line_text);
+        }
+      } else {
+        // Regular context line
+        SetConsoleTextAttribute(hConsole, originalAttrs);
+        printf("  %s", context_lines_text[i]);
+      }
+    }
+  } else {
+    // No lines collected
+    SetConsoleTextAttribute(hConsole, originalAttrs);
+    printf("<No preview available>");
+  }
+
+  // Always reset attributes at the end
+  SetConsoleTextAttribute(hConsole, originalAttrs);
+}
 
 /**
- * Display grep results with improved redrawing to eliminate flickering
- * and fixed footer positioning
+ * Display grep results with completely rewritten drawing logic to fix display
+ * issues
  */
 static void display_grep_results() {
   if (grep_results.count == 0) {
     return;
   }
 
-  // Get handles to console
+  // Get handles and initial settings
   HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
   HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
   CONSOLE_SCREEN_BUFFER_INFO csbi;
   WORD originalAttrs;
 
-  // Save original console attributes
+  // Save original console attributes and mode
   GetConsoleScreenBufferInfo(hConsole, &csbi);
   originalAttrs = csbi.wAttributes;
-
-  // Save original console mode
   DWORD originalMode;
   GetConsoleMode(hStdin, &originalMode);
-
-  // Set console mode for raw input
   SetConsoleMode(hStdin, ENABLE_PROCESSED_INPUT);
+
+  // Save original cursor info
+  CONSOLE_CURSOR_INFO originalCursorInfo;
+  GetConsoleCursorInfo(hConsole, &originalCursorInfo);
 
   // Initialize results viewer
   grep_results.current_index = 0;
   grep_results.is_active = TRUE;
 
-  // Calculate dimensions
-  int console_width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
-  int console_height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
-
-  // Adjust display to use about 70% of screen height
-  int display_height = (int)(console_height * 0.7);
-  if (display_height < 10)
-    display_height = 10; // Minimum reasonable size
-
-  // Calculate split dimensions - left side is fixed width for filenames
-  int left_width = 30; // Fixed width for file list
-  if (left_width > console_width / 3)
-    left_width = console_width / 3; // Cap at 1/3 of console width
-
-  int right_width = console_width - left_width - 3; // -3 for separators
-
-  // Store original cursor position
-  COORD originalCursorPos = csbi.dwCursorPosition;
-
-  // Clear the screen initially
+  // Initial screen clear only once at the beginning
   system("cls");
 
-  // Draw the initial static heading only once
-  SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
-  printf("Grep Results (%d matches)\n", grep_results.count);
-
-  // Draw separator under title
-  SetConsoleTextAttribute(hConsole, COLOR_BOX);
-  for (int i = 0; i < console_width; i++)
-    printf("─");
-  printf("\n\n");
-
-  // Calculate the fixed display area coordinates
-  COORD displayAreaStart = {0, 3};      // Start after title and separator
-  int list_height = display_height - 7; // Reserve space for header and footer
-
-  // Calculate the absolute position of the footer - This is key to the fix
-  // We'll place the footer at fixed positions from the bottom of the visible
-  // window
-  int footerLineY = csbi.srWindow.Bottom - 3;  // 3 lines from bottom
-  int navHelpLineY = csbi.srWindow.Bottom - 2; // 2 lines from bottom
-
-  // Create buffer for storing previous view state
-  int prev_current_index = -1;
-  int prev_start_index = -1;
+  // Previous selection index to track what needs updating
+  int previous_index = -1;
 
   // Main navigation loop
   while (grep_results.is_active) {
-    // Get current result
-    GrepResult *result = &grep_results.results[grep_results.current_index];
-
-    // Hide cursor during redraw
-    CONSOLE_CURSOR_INFO cursorInfo;
-    GetConsoleCursorInfo(hConsole, &cursorInfo);
-    BOOL originalCursorVisible = cursorInfo.bVisible;
-    cursorInfo.bVisible = FALSE;
+    // Hide cursor during drawing to prevent jumping
+    CONSOLE_CURSOR_INFO cursorInfo = {1, FALSE}; // Size 1, invisible
     SetConsoleCursorInfo(hConsole, &cursorInfo);
 
-    // Save the buffer info again to ensure we have current dimensions
+    // Get current console dimensions
     GetConsoleScreenBufferInfo(hConsole, &csbi);
-    console_width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
-    right_width = console_width - left_width - 3;
+    int console_width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    int console_height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
 
-    // Recalculate footer positions in case console size changed
-    footerLineY = csbi.srWindow.Bottom - 3;
-    navHelpLineY = csbi.srWindow.Bottom - 2;
+    // Layout calculations
+    int left_width = 30; // Fixed width for file list
+    if (left_width > console_width / 3)
+      left_width = console_width / 3;
 
-    // Calculate how many files to show
-    int files_to_show = grep_min(list_height, grep_results.count);
+    int right_width = console_width - left_width - 3; // Space for separators
+    int list_height =
+        console_height - 7; // Reserve space for headers and footers
+    if (list_height < 5)
+      list_height = 5; // Minimum reasonable size
 
-    // Calculate start index to keep selected item in view
-    int start_index = 0;
-    if (grep_results.current_index >= list_height) {
-      // If current index is off-screen, adjust start index
-      start_index = grep_results.current_index - list_height + 1;
+    // Calculate preview area - completely separate from list
+    int preview_top = 3;
+    int preview_height = 20; // Increased to show more context lines
+
+    // Make sure preview area fits in the console
+    if (preview_height > list_height - 2)
+      preview_height = list_height - 2;
+
+    // Only redraw everything if dimensions changed or first time
+    BOOL full_redraw = (previous_index == -1);
+
+    if (full_redraw) {
+      // Draw header
+      SetConsoleCursorPosition(hConsole, (COORD){0, 0});
+      SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
+      printf("Grep Results (%d matches)", grep_results.count);
+
+      // Move to next line for separator
+      COORD sepPos = {0, 1};
+      SetConsoleCursorPosition(hConsole, sepPos);
+
+      // Draw separator
+      SetConsoleTextAttribute(hConsole, COLOR_BOX);
+      for (int i = 0; i < console_width; i++)
+        printf("─");
+
+      // Add extra space after separator
+      printf("\n\n");
     }
 
-    // Check if we need a full redraw or can optimize
-    BOOL need_full_redraw =
-        (prev_current_index == -1 || prev_start_index != start_index);
+    // Calculate visible range
+    int visible_items =
+        list_height < grep_results.count ? list_height : grep_results.count;
+    int start_index = 0;
 
-    if (need_full_redraw) {
-      // FULL REDRAW - First time or scrolling occurred
+    // Adjust start index to keep selection in view
+    if (grep_results.current_index >= list_height) {
+      start_index = grep_results.current_index - list_height + 1;
 
-      // Position at the start of the display area
-      SetConsoleCursorPosition(hConsole, displayAreaStart);
-
-      // Clear entire display area excluding footer in one operation
-      for (int y = displayAreaStart.Y; y < csbi.srWindow.Bottom - 4; y++) {
-        COORD clearPos = {0, y};
-        DWORD written;
-        FillConsoleOutputCharacter(hConsole, ' ', console_width, clearPos,
-                                   &written);
-        FillConsoleOutputAttribute(hConsole, originalAttrs, console_width,
-                                   clearPos, &written);
+      // Ensure we don't go past the end
+      if (start_index + visible_items > grep_results.count) {
+        start_index = grep_results.count - visible_items;
       }
+    }
 
-      // Return to display area start
-      SetConsoleCursorPosition(hConsole, displayAreaStart);
+    // If the visible range changed, we need a full redraw
+    static int previous_start_index = -1;
+    if (previous_start_index != start_index) {
+      full_redraw = TRUE;
+      previous_start_index = start_index;
+    }
 
-      // Display the file list
-      for (int i = 0; i < files_to_show; i++) {
+    // Only redraw the list if needed
+    if (full_redraw || previous_index != grep_results.current_index) {
+      // Draw the file list first (complete separate entity)
+      for (int i = 0; i < visible_items; i++) {
         int result_idx = start_index + i;
-        if (result_idx >= grep_results.count)
-          break;
+        GrepResult *result = &grep_results.results[result_idx];
 
-        GrepResult *match = &grep_results.results[result_idx];
+        // Position cursor for this list item
+        SetConsoleCursorPosition(hConsole, (COORD){0, 3 + i});
 
-        // Extract just the filename without path
-        char *filename = match->filename;
-        char *lastSlash = strrchr(filename, '\\');
-        if (lastSlash) {
-          filename = lastSlash + 1;
+        // Extract just the filename from path
+        char *filename = result->filename;
+        char *last_slash = strrchr(filename, '\\');
+        if (last_slash) {
+          filename = last_slash + 1;
+        }
+
+        // Truncate filename if too long
+        char display_name[40] = {0};
+        strncpy(display_name, filename, sizeof(display_name) - 1);
+        if (strlen(display_name) > (size_t)(left_width - 10)) {
+          display_name[left_width - 13] = '.';
+          display_name[left_width - 12] = '.';
+          display_name[left_width - 11] = '.';
+          display_name[left_width - 10] = '\0';
         }
 
         // Highlight current selection
@@ -510,179 +635,176 @@ static void display_grep_results() {
           printf("  ");
         }
 
-        // Truncate filename if too long
-        char display_name[50]; // Buffer for truncated name
-        strncpy(display_name, filename, sizeof(display_name) - 1);
-        display_name[sizeof(display_name) - 1] = '\0';
-
-        if (strlen(display_name) > left_width - 10) {
-          // Truncate with ellipsis
-          display_name[left_width - 10] = '.';
-          display_name[left_width - 9] = '.';
-          display_name[left_width - 8] = '.';
-          display_name[left_width - 7] = '\0';
-        }
-
-        // Use fixed width (4 digits) for line numbers to ensure consistent
-        // alignment
-        printf("%-*s:%4d", left_width - 10, display_name, match->line_number);
-
-        // Draw separator between file list and preview
-        SetConsoleTextAttribute(hConsole, COLOR_BOX);
-        printf(" │ ");
-
-        // Show preview for the selected file only
-        if (result_idx == grep_results.current_index) {
-          print_file_preview(hConsole, match, originalAttrs, right_width,
-                             left_width);
-        }
-
-        printf("\n");
+        // Print filename and line number
+        printf("%-*s:%4d", left_width - 10, display_name, result->line_number);
       }
 
-      // Draw remaining empty lines to keep the display stable
-      for (int i = files_to_show; i < list_height; i++) {
-        SetConsoleTextAttribute(hConsole, COLOR_BOX);
-        printf("%*s │\n", left_width, "");
+      // Fill remaining list area with empty lines
+      for (int i = visible_items; i < list_height; i++) {
+        SetConsoleCursorPosition(hConsole, (COORD){0, 3 + i});
+        printf("%-*s", left_width, "");
       }
 
-    } else {
-      // OPTIMIZED REDRAW - Just update the previously selected item and the new
-      // one
-
-      // First, unhighlight the previously selected item
-      if (prev_current_index >= 0 && prev_current_index >= start_index &&
-          prev_current_index < start_index + files_to_show) {
-
-        int prev_y_offset = prev_current_index - start_index;
-        COORD prevPos = {0, displayAreaStart.Y + prev_y_offset};
-        SetConsoleCursorPosition(hConsole, prevPos);
-
-        // Unhighlight previous item
-        SetConsoleTextAttribute(hConsole, originalAttrs);
-
-        GrepResult *prev_match = &grep_results.results[prev_current_index];
-        char *prev_filename = prev_match->filename;
-        char *prev_lastSlash = strrchr(prev_filename, '\\');
-        if (prev_lastSlash) {
-          prev_filename = prev_lastSlash + 1;
-        }
-
-        char prev_display_name[50];
-        strncpy(prev_display_name, prev_filename,
-                sizeof(prev_display_name) - 1);
-        prev_display_name[sizeof(prev_display_name) - 1] = '\0';
-
-        if (strlen(prev_display_name) > left_width - 10) {
-          prev_display_name[left_width - 10] = '.';
-          prev_display_name[left_width - 9] = '.';
-          prev_display_name[left_width - 8] = '.';
-          prev_display_name[left_width - 7] = '\0';
-        }
-
-        printf("  %-*s:%4d", left_width - 10, prev_display_name,
-               prev_match->line_number);
-
-        // Redraw separator
-        SetConsoleTextAttribute(hConsole, COLOR_BOX);
-        printf(" │ ");
-
-        // Clear the preview area for the previously selected item
-        DWORD written;
-        COORD clearPreviewPos = {left_width + 3,
-                                 displayAreaStart.Y + prev_y_offset};
-        FillConsoleOutputCharacter(hConsole, ' ', right_width, clearPreviewPos,
-                                   &written);
-        FillConsoleOutputAttribute(hConsole, originalAttrs, right_width,
-                                   clearPreviewPos, &written);
-      }
-
-      // Now highlight the current item
-      int curr_y_offset = grep_results.current_index - start_index;
-      COORD currPos = {0, displayAreaStart.Y + curr_y_offset};
-      SetConsoleCursorPosition(hConsole, currPos);
-
-      // Highlight current item
-      SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
-
-      GrepResult *curr_match =
-          &grep_results.results[grep_results.current_index];
-      char *curr_filename = curr_match->filename;
-      char *curr_lastSlash = strrchr(curr_filename, '\\');
-      if (curr_lastSlash) {
-        curr_filename = curr_lastSlash + 1;
-      }
-
-      char curr_display_name[50];
-      strncpy(curr_display_name, curr_filename, sizeof(curr_display_name) - 1);
-      curr_display_name[sizeof(curr_display_name) - 1] = '\0';
-
-      if (strlen(curr_display_name) > left_width - 10) {
-        curr_display_name[left_width - 10] = '.';
-        curr_display_name[left_width - 9] = '.';
-        curr_display_name[left_width - 8] = '.';
-        curr_display_name[left_width - 7] = '\0';
-      }
-
-      printf("→ %-*s:%4d", left_width - 10, curr_display_name,
-             curr_match->line_number);
-
-      // Draw separator
+      // Draw the vertical separator line for the entire height
       SetConsoleTextAttribute(hConsole, COLOR_BOX);
-      printf(" │ ");
+      for (int i = 0; i < list_height; i++) {
+        SetConsoleCursorPosition(hConsole, (COORD){left_width, 3 + i});
+        printf(" │ ");
+      }
 
-      // Show preview for current item
-      COORD previewPos = {left_width + 3, displayAreaStart.Y + curr_y_offset};
-      SetConsoleCursorPosition(hConsole, previewPos);
-      print_file_preview(hConsole, curr_match, originalAttrs, right_width,
-                         left_width);
+      // Clear preview area first
+      SetConsoleTextAttribute(hConsole, originalAttrs);
+      for (int i = 0; i < preview_height; i++) {
+        SetConsoleCursorPosition(hConsole,
+                                 (COORD){left_width + 3, preview_top + i});
+        printf("%-*s", right_width, "");
+      }
+
+      // Draw preview title
+      SetConsoleCursorPosition(hConsole, (COORD){left_width + 3, preview_top});
+      SetConsoleTextAttribute(hConsole, COLOR_INFO);
+      printf("Preview:");
+
+      // Show preview for current item in dedicated area
+      if (grep_results.current_index >= 0 &&
+          grep_results.current_index < grep_results.count) {
+        GrepResult *current = &grep_results.results[grep_results.current_index];
+
+        // Position for preview content (skip title line)
+        SetConsoleCursorPosition(hConsole,
+                                 (COORD){left_width + 3, preview_top + 1});
+
+        // Load preview lines directly - with expanded context
+        FILE *preview_file = fopen(current->filename, "r");
+        if (preview_file) {
+          int target_line = current->line_number;
+
+          // Increased context lines - show roughly (preview_height-1)/2 lines
+          // before and after
+          int context_lines = (preview_height - 2) / 2;
+
+          int start_line =
+              (target_line <= context_lines) ? 1 : target_line - context_lines;
+          int line_to_show = start_line;
+          char buffer[512];
+
+          // Skip to start line
+          int line_count = 1;
+          while (line_count < start_line &&
+                 fgets(buffer, sizeof(buffer), preview_file)) {
+            line_count++;
+          }
+
+          // Show preview lines (one per line in the preview area)
+          for (int i = 0; i < preview_height - 1 &&
+                          fgets(buffer, sizeof(buffer), preview_file);
+               i++) {
+            // Position cursor for this preview line
+            SetConsoleCursorPosition(
+                hConsole, (COORD){left_width + 3, preview_top + 1 + i});
+
+            // Remove newline
+            size_t len = strlen(buffer);
+            if (len > 0 && buffer[len - 1] == '\n') {
+              buffer[len - 1] = '\0';
+              len--;
+            }
+
+            // Truncate if too long
+            if (len > (size_t)right_width - 10) {
+              buffer[right_width - 10] = '.';
+              buffer[right_width - 9] = '.';
+              buffer[right_width - 8] = '.';
+              buffer[right_width - 7] = '\0';
+            }
+
+            // Highlight the match line
+            if (line_to_show == target_line) {
+              SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
+              printf("► ");
+            } else {
+              SetConsoleTextAttribute(hConsole, originalAttrs);
+              printf("  ");
+            }
+
+            printf("%4d| ", line_to_show);
+
+            // Show content with match highlighting if current line
+            if (line_to_show == target_line) {
+              // Try to highlight the matching text
+              char *line_start = buffer;
+              char *match_text = current->line_content + current->match_start;
+              int match_len = current->match_length;
+              char *match_pos = strstr(line_start, match_text);
+
+              if (match_pos) {
+                // Print before match
+                int prefix_len = match_pos - line_start;
+                SetConsoleTextAttribute(hConsole, originalAttrs);
+                printf("%.*s", prefix_len, line_start);
+
+                // Print match with highlight
+                SetConsoleTextAttribute(hConsole, COLOR_MATCH);
+                printf("%.*s", match_len, match_pos);
+
+                // Print after match
+                SetConsoleTextAttribute(hConsole, originalAttrs);
+                printf("%s", match_pos + match_len);
+              } else {
+                SetConsoleTextAttribute(hConsole, originalAttrs);
+                printf("%s", buffer);
+              }
+            } else {
+              // Regular line - no highlighting
+              SetConsoleTextAttribute(hConsole, originalAttrs);
+              printf("%s", buffer);
+            }
+
+            line_to_show++;
+          }
+
+          fclose(preview_file);
+        } else {
+          SetConsoleTextAttribute(hConsole, originalAttrs);
+          printf("Could not open file for preview");
+        }
+      }
+
+      // Remember what we just displayed
+      previous_index = grep_results.current_index;
     }
 
-    // === FOOTER SECTION - FIXED POSITIONING ===
-    // This section is completely rewritten to ensure footer appears at the
-    // bottom
-
-    // First, clear the footer area (3 lines from the bottom)
-    for (int y = footerLineY - 1; y <= navHelpLineY + 1; y++) {
-      COORD clearPos = {0, y};
-      DWORD written;
-      FillConsoleOutputCharacter(hConsole, ' ', console_width, clearPos,
-                                 &written);
-      FillConsoleOutputAttribute(hConsole, originalAttrs, console_width,
-                                 clearPos, &written);
-    }
-
-    // Draw separator line at fixed position
-    COORD separatorPos = {0, footerLineY - 1};
-    SetConsoleCursorPosition(hConsole, separatorPos);
+    // Always update file info and help text
+    // Show file information
+    SetConsoleCursorPosition(hConsole, (COORD){0, 3 + list_height});
     SetConsoleTextAttribute(hConsole, COLOR_BOX);
     for (int i = 0; i < console_width; i++)
       printf("─");
 
-    // Show file information at fixed position
-    COORD fileInfoPos = {0, footerLineY};
-    SetConsoleCursorPosition(hConsole, fileInfoPos);
+    // Display current file info
+    SetConsoleCursorPosition(hConsole, (COORD){0, 4 + list_height});
     SetConsoleTextAttribute(hConsole, COLOR_INFO);
+    GrepResult *current = &grep_results.results[grep_results.current_index];
     char absolutePath[MAX_PATH];
-    if (_fullpath(absolutePath, result->filename, MAX_PATH) != NULL) {
-      printf("File: %s", absolutePath);
+    if (_fullpath(absolutePath, current->filename, MAX_PATH) != NULL) {
+      printf("File: %-*s (Line %d)", console_width - 20, absolutePath,
+             current->line_number);
     } else {
-      printf("File: %s", result->filename);
+      printf("File: %-*s (Line %d)", console_width - 20, current->filename,
+             current->line_number);
     }
 
-    // Show navigation help at fixed position
-    COORD navHelpPos = {0, navHelpLineY};
-    SetConsoleCursorPosition(hConsole, navHelpPos);
+    // Navigation help - updated for swapped keys
+    SetConsoleCursorPosition(hConsole, (COORD){0, 5 + list_height});
     SetConsoleTextAttribute(hConsole, originalAttrs);
-    printf("Navigation: TAB/j/DOWN - Next  SHIFT+TAB/k/UP - Prev  o - Open in "
-           "Editor  ENTER - Detail View  ESC/Q - Exit");
+    printf("Navigation: TAB/j/DOWN - Next  SHIFT+TAB/k/UP - Prev  ENTER - Open "
+           "in Editor  o - Detail View  ESC/Q - Exit");
 
-    // Save current state for next iteration
-    prev_current_index = grep_results.current_index;
-    prev_start_index = start_index;
+    // Position cursor at the bottom of the screen for user input
+    SetConsoleCursorPosition(hConsole, (COORD){0, 6 + list_height});
 
-    // Restore cursor visibility
-    cursorInfo.bVisible = originalCursorVisible;
+    // Make cursor visible now that drawing is complete
+    cursorInfo.bVisible = TRUE;
     SetConsoleCursorInfo(hConsole, &cursorInfo);
 
     // Process input for navigation
@@ -698,7 +820,7 @@ static void display_grep_results() {
         WORD keyCode = inputRecord.Event.KeyEvent.wVirtualKeyCode;
         DWORD controlKeyState = inputRecord.Event.KeyEvent.dwControlKeyState;
 
-        // Check for navigation keys
+        // Navigation keys
         if (keyCode == VK_TAB) {
           if (controlKeyState & SHIFT_PRESSED) {
             // Shift+Tab - Previous result
@@ -712,248 +834,162 @@ static void display_grep_results() {
             grep_results.current_index =
                 (grep_results.current_index + 1) % grep_results.count;
           }
-        } else if (keyCode == VK_UP) {
-          // Up arrow - Previous result
+        } else if (keyCode == VK_UP || keyCode == 'K') {
+          // Up arrow or K - Previous result
           if (grep_results.current_index > 0) {
             grep_results.current_index--;
           } else {
             grep_results.current_index = grep_results.count - 1;
           }
-        } else if (keyCode == VK_DOWN) {
-          // Down arrow - Next result
+        } else if (keyCode == VK_DOWN || keyCode == 'J') {
+          // Down arrow or J - Next result
           grep_results.current_index =
               (grep_results.current_index + 1) % grep_results.count;
-        } else if (keyCode == 'J') {
-          // j key - Next result (same as Down arrow)
-          grep_results.current_index =
-              (grep_results.current_index + 1) % grep_results.count;
-        } else if (keyCode == 'K') {
-          // k key - Previous result (same as Up arrow)
-          if (grep_results.current_index > 0) {
-            grep_results.current_index--;
-          } else {
-            grep_results.current_index = grep_results.count - 1;
-          }
         } else if (keyCode == VK_RETURN) {
-          // Enter - Open detail view
-          GrepResult *result =
-              &grep_results.results[grep_results.current_index];
-          show_file_detail_view(result);
-
-          // Force full redraw after returning from detail view
-          prev_current_index = -1;
-          prev_start_index = -1;
-        } else if (keyCode == 'O' || keyCode == 'o') {
-          // 'o' key - Open in editor
+          // ENTER - Now opens directly in editor
           open_file_in_editor(
               grep_results.results[grep_results.current_index].filename,
               grep_results.results[grep_results.current_index].line_number);
 
-          // Force full redraw after returning from editor
-          prev_current_index = -1;
-          prev_start_index = -1;
-        } else if (keyCode == VK_ESCAPE || keyCode == 'Q' || keyCode == 'q') {
-          // Escape or Q - Exit results view
+          // Need a full redraw after returning from editor
+          full_redraw = TRUE;
+          previous_index = -1;
+          system("cls");
+        } else if (keyCode == 'O') {
+          // 'O' - Now shows detail view
+          show_file_detail_view(
+              &grep_results.results[grep_results.current_index]);
+
+          // Need a full redraw after returning from detail view
+          full_redraw = TRUE;
+          previous_index = -1;
+          system("cls");
+        } else if (keyCode == VK_ESCAPE || keyCode == 'Q') {
+          // Escape or Q - Exit
           grep_results.is_active = FALSE;
         }
       }
     }
   }
 
-  // Restore console settings
+  // Final cleanup
   SetConsoleTextAttribute(hConsole, originalAttrs);
   SetConsoleMode(hStdin, originalMode);
 
-  // Clear the screen completely to remove all previous content
+  // Restore original cursor info
+  SetConsoleCursorInfo(hConsole, &originalCursorInfo);
+
   system("cls");
 
-  // Position cursor precisely at the top-left of the screen (0,0)
-  // This ensures the next prompt will start from the top
+  // Position cursor properly for next prompt
   COORD topPos = {0, 0};
   SetConsoleCursorPosition(hConsole, topPos);
-
-  // Print a blank line to ensure proper spacing for the prompt
   printf("\n");
 }
 
 /**
- * Helper function to print the file preview for a grep result
+ * Show detailed view of a grep result
+ * Simplified to ensure consistent display
  */
-static void print_file_preview(HANDLE hConsole, GrepResult *match,
-                               WORD originalAttrs, int right_width,
-                               int left_width) {
-  // Improved compact preview that shows multiple lines without breaking layout
-  FILE *preview_file = fopen(match->filename, "r");
-  if (preview_file) {
-    // Setup context variables
-    int target_line = match->line_number;
-    int context_lines =
-        5; // Show 5 lines above and below for a total of 11 lines
-    int start_line =
-        (target_line <= context_lines) ? 1 : target_line - context_lines;
-    int end_line = target_line + context_lines;
+void show_file_detail_view(GrepResult *result) {
+  // Get handle to console
+  HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  WORD originalAttrs;
+
+  // Save original console attributes
+  CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
+  GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
+  originalAttrs = consoleInfo.wAttributes;
+
+  // Clear the screen
+  system("cls");
+
+  // Show file information header
+  SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
+  printf("File: %s (line %d)\n\n", result->filename, result->line_number);
+
+  // Show file content with context
+  FILE *file = fopen(result->filename, "r");
+  if (file) {
+    // Show more context in the detail view
+    int context_lines = 10;
+    int start_line = (result->line_number <= context_lines)
+                         ? 1
+                         : result->line_number - context_lines;
+    int end_line = result->line_number + context_lines;
     int current_line = 1;
-    char line_buffer[256];
+    char line[1024];
 
     // Skip to start line
-    while (current_line < start_line &&
-           fgets(line_buffer, sizeof(line_buffer), preview_file)) {
+    while (current_line < start_line && fgets(line, sizeof(line), file)) {
       current_line++;
     }
 
-    // Collect the context lines
-    int lines_collected = 0;
-    char context_lines_text[11][256] = {0}; // 5 above, 1 match, 5 below
+    // Read and display lines with context
+    SetConsoleTextAttribute(hConsole, originalAttrs);
+    printf("Content preview:\n\n");
 
-    while (current_line <= end_line &&
-           fgets(line_buffer, sizeof(line_buffer), preview_file)) {
-      // Trim newline
-      size_t len = strlen(line_buffer);
-      if (len > 0 && line_buffer[len - 1] == '\n') {
-        line_buffer[len - 1] = '\0';
+    while (current_line <= end_line && fgets(line, sizeof(line), file)) {
+      // Remove newline if present
+      size_t len = strlen(line);
+      if (len > 0 && line[len - 1] == '\n') {
+        line[len - 1] = '\0';
         len--;
       }
 
-      // Truncate if too long (use less space for context lines)
-      int max_len = (current_line == target_line) ? 60 : 45;
-      if ((int)len > max_len) {
-        line_buffer[max_len - 3] = '.';
-        line_buffer[max_len - 2] = '.';
-        line_buffer[max_len - 1] = '.';
-        line_buffer[max_len] = '\0';
-      }
+      // Show line with appropriate highlighting
+      if (current_line == result->line_number) {
+        // Highlight the matching line
+        SetConsoleTextAttribute(hConsole, COLOR_INFO);
+        printf("%4d → ", current_line);
 
-      // Store in the appropriate slot
-      int slot_idx = current_line - start_line;
-      if (slot_idx >= 0 && slot_idx < 11) {
-        // Use fixed width for line numbers (4 digits) to ensure alignment
-        snprintf(context_lines_text[slot_idx], 256, "%4d: %s", current_line,
-                 line_buffer);
-        lines_collected++;
+        // Print parts before match
+        SetConsoleTextAttribute(hConsole, originalAttrs);
+        printf("%.*s", result->match_start, line);
+
+        // Print match with highlight
+        SetConsoleTextAttribute(hConsole, COLOR_MATCH);
+        printf("%.*s", result->match_length, line + result->match_start);
+
+        // Print after match
+        SetConsoleTextAttribute(hConsole, originalAttrs);
+        printf("%s\n", line + result->match_start + result->match_length);
+      } else {
+        // Regular line
+        printf("%4d   %s\n", current_line, line);
       }
 
       current_line++;
     }
 
-    fclose(preview_file);
-
-    // Now display the collected lines with proper spacing
-    if (lines_collected > 0) {
-      // Calculate which lines to display to keep match centered
-      int target_slot = target_line - start_line;
-
-      // We want to show all 11 lines when possible
-      int max_display_lines = grep_min(lines_collected, 11);
-
-      // Calculate start and end indices to center the match line
-      int mid_point = max_display_lines / 2;
-      int start_idx = target_slot - mid_point;
-      if (start_idx < 0)
-        start_idx = 0;
-
-      int end_idx = start_idx + max_display_lines - 1;
-      if (end_idx >= lines_collected) {
-        end_idx = lines_collected - 1;
-        start_idx = grep_max(0, end_idx - max_display_lines + 1);
-      }
-
-      // Display centered context
-      for (int line_idx = start_idx; line_idx <= end_idx; line_idx++) {
-        if (line_idx > start_idx) {
-          // New line for additional context lines
-          printf("\n%*s│ ", left_width, "");
-        }
-
-        if (line_idx == target_slot) {
-          // This is the matched line - highlight it
-          SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
-          printf("► ");
-
-          // Find match in the line for highlighting
-          char *line_text = context_lines_text[line_idx];
-          char *colon_pos = strchr(line_text, ':');
-          char *match_start = NULL;
-
-          if (colon_pos && match->match_length > 0) {
-            char match_text[256] = {0};
-            strncpy(match_text, match->line_content + match->match_start,
-                    match->match_length < 255 ? match->match_length : 255);
-            match_text[match->match_length < 255 ? match->match_length : 255] =
-                '\0';
-
-            match_start = strstr(colon_pos, match_text);
-          }
-
-          // Print with match highlighting
-          if (match_start) {
-            // Calculate positions
-            char *line_start = line_text;
-            int prefix_len = match_start - line_start;
-
-            // Print prefix
-            SetConsoleTextAttribute(hConsole, originalAttrs);
-            printf("%.*s", prefix_len, line_start);
-
-            // Print match with highlight
-            SetConsoleTextAttribute(hConsole, COLOR_MATCH);
-            printf("%.*s", match->match_length, match_start);
-
-            // Print suffix
-            SetConsoleTextAttribute(hConsole, originalAttrs);
-            printf("%s", match_start + match->match_length);
-          } else {
-            // Just print the whole line
-            SetConsoleTextAttribute(hConsole, originalAttrs);
-            printf("%s", line_text);
-          }
-        } else {
-          // Regular context line
-          SetConsoleTextAttribute(hConsole, originalAttrs);
-          printf("  %s", context_lines_text[line_idx]);
-        }
-      }
-    } else {
-      // Fallback if no lines could be collected
-      SetConsoleTextAttribute(hConsole, originalAttrs);
-      printf("<Could not read file content>");
-    }
+    fclose(file);
   } else {
-    // Fallback to show just the matched text directly
-    int start_pos = 0;
-    if (match->match_start > 10) {
-      start_pos = match->match_start - 10;
-      printf("...");
-    }
-
-    SetConsoleTextAttribute(hConsole, originalAttrs);
-    for (int j = start_pos; j < match->match_start; j++) {
-      printf("%c", match->line_content[j]);
-    }
-
+    // Could not open file
     SetConsoleTextAttribute(hConsole, COLOR_MATCH);
-    for (int j = match->match_start;
-         j < match->match_start + match->match_length; j++) {
-      printf("%c", match->line_content[j]);
-    }
-
-    SetConsoleTextAttribute(hConsole, originalAttrs);
-    int chars_printed = 0;
-    int remaining = right_width - (match->match_start - start_pos) -
-                    match->match_length - 3;
-
-    for (int j = match->match_start + match->match_length;
-         match->line_content[j] && chars_printed < remaining; j++) {
-      printf("%c", match->line_content[j]);
-      chars_printed++;
-    }
-
-    if (strlen(match->line_content + match->match_start + match->match_length) >
-        chars_printed) {
-      printf("...");
-    }
+    printf("Could not open file for preview\n");
   }
+
+  // Show options
+  printf("\n");
+  SetConsoleTextAttribute(hConsole, COLOR_BOX);
+  printf("Press ENTER to open in editor, any other key to return to results "
+         "view...");
+
+  // Get user input
+  int key = _getch();
+
+  // If ENTER pressed, open in editor
+  if (key == 13) {
+    open_file_in_editor(result->filename, result->line_number);
+  }
+
+  // Reset console color
+  SetConsoleTextAttribute(hConsole, originalAttrs);
 }
 
+/**
+ * Open the file in an appropriate editor at the specified line
+ */
 static int open_file_in_editor(const char *file_path, int line_number) {
   char command[2048] = {0};
   int success = 0;
@@ -1006,108 +1042,6 @@ static int open_file_in_editor(const char *file_path, int line_number) {
     _getch();
     return 0;
   }
-}
-
-void show_file_detail_view(GrepResult *result) {
-  // Get handle to console
-  HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-  WORD originalAttrs;
-
-  // Save original console attributes
-  CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
-  GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
-  originalAttrs = consoleInfo.wAttributes;
-
-  // Clear the screen completely
-  system("cls");
-
-  // Show file information header
-  SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
-  printf("File: %s (line %d)\n\n", result->filename, result->line_number);
-
-  // Show file content preview
-  FILE *file = fopen(result->filename, "r");
-  if (file) {
-    // Calculate context - show 5 lines before and after match
-    int context_lines = 5;
-    int start_line = grep_max(1, result->line_number - context_lines);
-    int end_line = result->line_number + context_lines;
-    int current_line = 1;
-    char line[4096];
-
-    // Skip to start line
-    while (current_line < start_line && fgets(line, sizeof(line), file)) {
-      current_line++;
-    }
-
-    // Read and display lines with context
-    SetConsoleTextAttribute(hConsole, originalAttrs);
-    printf("Preview:\n");
-    while (current_line <= end_line && fgets(line, sizeof(line), file)) {
-      // Remove newline if present
-      size_t len = strlen(line);
-      if (len > 0 && line[len - 1] == '\n') {
-        line[len - 1] = '\0';
-        len--;
-      }
-
-      // Show line number
-      if (current_line == result->line_number) {
-        // Highlight the matching line
-        SetConsoleTextAttribute(hConsole, COLOR_INFO);
-        printf("%4d → ", current_line);
-
-        // Print parts before match
-        SetConsoleTextAttribute(hConsole, originalAttrs);
-        for (int i = 0; i < result->match_start; i++) {
-          printf("%c", line[i]);
-        }
-
-        // Print match with highlight
-        SetConsoleTextAttribute(hConsole, COLOR_MATCH);
-        for (int i = result->match_start;
-             i < result->match_start + result->match_length && i < len; i++) {
-          printf("%c", line[i]);
-        }
-
-        // Print after match
-        SetConsoleTextAttribute(hConsole, originalAttrs);
-        for (int i = result->match_start + result->match_length; i < len; i++) {
-          printf("%c", line[i]);
-        }
-
-        printf("\n");
-      } else {
-        // Regular line
-        printf("%4d   %s\n", current_line, line);
-      }
-
-      current_line++;
-    }
-
-    fclose(file);
-  } else {
-    // Could not open file
-    SetConsoleTextAttribute(hConsole, COLOR_MATCH);
-    printf("Could not open file for preview\n");
-  }
-
-  // Show options for the user
-  printf("\n");
-  SetConsoleTextAttribute(hConsole, COLOR_BOX);
-  printf("Press ENTER to open in editor, any other key to return to results "
-         "view...");
-
-  // Get user input
-  int key = _getch();
-
-  // If ENTER (13) pressed, open the file in an editor
-  if (key == KEY_ENTER || key == 13) {
-    open_file_in_editor(result->filename, result->line_number);
-  }
-
-  // Restore console color
-  SetConsoleTextAttribute(hConsole, originalAttrs);
 }
 
 /**
