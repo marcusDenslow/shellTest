@@ -35,6 +35,7 @@ typedef struct {
 
 // Global result list
 static GrepResultList grep_results = {0};
+static int open_file_in_editor(const char *file_path, int line_number);
 
 // Helper function to calculate number of digits in an integer
 static int count_digits(int number) {
@@ -340,10 +341,6 @@ static void search_directory_collect(const char *directory, const char *pattern,
   FindClose(hFind);
 }
 
-/**
- * Compact display_grep_results function with file list and preview
- * Shows all files on the left and selected file content on the right
- */
 static void display_grep_results() {
   if (grep_results.count == 0) {
     return;
@@ -706,8 +703,8 @@ static void display_grep_results() {
 
     // Show navigation help
     SetConsoleTextAttribute(hConsole, originalAttrs);
-    printf("Navigation: TAB/j/DOWN - Next  SHIFT+TAB/k/UP - Prev  ENTER - View "
-           "File  ESC/Q - Exit\n");
+    printf("Navigation: TAB/j/DOWN - Next  SHIFT+TAB/k/UP - Prev  o - Open "
+           "in Editor  ENTER - Detail View  ESC/Q - Exit\n");
 
     // Restore cursor visibility
     cursorInfo.bVisible = originalCursorVisible;
@@ -763,8 +760,33 @@ static void display_grep_results() {
             grep_results.current_index = grep_results.count - 1;
           }
         } else if (keyCode == VK_RETURN) {
-          // Enter - Show full file in detail view
-          show_file_detail_view(result);
+          // Enter - Open directly in editor
+          GrepResult *result =
+              &grep_results.results[grep_results.current_index];
+
+          // Open the file directly in an editor
+          open_file_in_editor(result->filename, result->line_number);
+
+          // Keep grep mode active after returning from the editor
+          // This requires screen refresh
+          system("cls");
+
+          // Redraw the static title
+          SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
+          printf("Grep Results (%d matches)\n", grep_results.count);
+
+          // Draw separator under title
+          SetConsoleTextAttribute(hConsole, COLOR_BOX);
+          for (int i = 0; i < console_width; i++)
+            printf("─");
+          printf("\n\n");
+
+          // Reset display position to ensure clean redraw
+          SetConsoleCursorPosition(hConsole, displayAreaStart);
+        } else if (keyCode == 'O' || keyCode == 'o') {
+          // 'o' key - Show detail view
+          show_file_detail_view(
+              &grep_results.results[grep_results.current_index]);
 
           // Completely redraw the UI to fix duplicate lines issue
           system("cls");
@@ -805,19 +827,69 @@ static void display_grep_results() {
   printf("\n");
 }
 
-/**
- * Show a detailed view of the file with context around the match
- */
+static int open_file_in_editor(const char *file_path, int line_number) {
+  char command[2048] = {0};
+  int success = 0;
+
+  // Try to detect available editors (in order of preference)
+  FILE *test_nvim = _popen("nvim --version 2>nul", "r");
+  if (test_nvim != NULL) {
+    // Neovim is available - construct command with +line_number
+    _pclose(test_nvim);
+    snprintf(command, sizeof(command), "nvim +%d \"%s\"", line_number,
+             file_path);
+    success = 1;
+  } else {
+    // Try vim next
+    FILE *test_vim = _popen("vim --version 2>nul", "r");
+    if (test_vim != NULL) {
+      // Vim is available
+      _pclose(test_vim);
+      snprintf(command, sizeof(command), "vim +%d \"%s\"", line_number,
+               file_path);
+      success = 1;
+    } else {
+      // Try VSCode as last resort
+      FILE *test_code = _popen("code --version 2>nul", "r");
+      if (test_code != NULL) {
+        _pclose(test_code);
+        // VSCode uses filename:line_number syntax
+        snprintf(command, sizeof(command), "code -g \"%s:%d\"", file_path,
+                 line_number);
+        success = 1;
+      }
+    }
+  }
+
+  if (success) {
+    // Create a message for the user
+    printf("Opening %s at line %d...\n", file_path, line_number);
+
+    // Execute the command
+    success = (system(command) == 0);
+
+    // Wait for a brief moment to let the user see the message
+    Sleep(500);
+
+    return success;
+  } else {
+    // No suitable editor found
+    printf("No compatible editor (neovim, vim, or VSCode) found.\n");
+    printf("Press any key to continue...\n");
+    _getch();
+    return 0;
+  }
+}
+
 void show_file_detail_view(GrepResult *result) {
   // Get handle to console
   HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-  HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
-  CONSOLE_SCREEN_BUFFER_INFO csbi;
   WORD originalAttrs;
 
   // Save original console attributes
-  GetConsoleScreenBufferInfo(hConsole, &csbi);
-  originalAttrs = csbi.wAttributes;
+  CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
+  GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
+  originalAttrs = consoleInfo.wAttributes;
 
   // Clear the screen completely
   system("cls");
@@ -826,11 +898,11 @@ void show_file_detail_view(GrepResult *result) {
   SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
   printf("File: %s (line %d)\n\n", result->filename, result->line_number);
 
-  // Open the file and show content with context
+  // Show file content preview
   FILE *file = fopen(result->filename, "r");
   if (file) {
-    // Calculate context - show 10 lines before and after match
-    int context_lines = 10;
+    // Calculate context - show 5 lines before and after match
+    int context_lines = 5;
     int start_line = grep_max(1, result->line_number - context_lines);
     int end_line = result->line_number + context_lines;
     int current_line = 1;
@@ -843,6 +915,7 @@ void show_file_detail_view(GrepResult *result) {
 
     // Read and display lines with context
     SetConsoleTextAttribute(hConsole, originalAttrs);
+    printf("Preview:\n");
     while (current_line <= end_line && fgets(line, sizeof(line), file)) {
       // Remove newline if present
       size_t len = strlen(line);
@@ -889,16 +962,22 @@ void show_file_detail_view(GrepResult *result) {
   } else {
     // Could not open file
     SetConsoleTextAttribute(hConsole, COLOR_MATCH);
-    printf("Could not open file for detail view\n");
+    printf("Could not open file for preview\n");
   }
 
-  // Show footer with instruction
+  // Show options for the user
   printf("\n");
   SetConsoleTextAttribute(hConsole, COLOR_BOX);
-  printf("Press any key to return to results view...");
+  printf("Press ENTER to open in editor, any other key to return to results "
+         "view...");
 
-  // Wait for any key
-  _getch();
+  // Get user input
+  int key = _getch();
+
+  // If ENTER (13) pressed, open the file in an editor
+  if (key == KEY_ENTER || key == 13) {
+    open_file_in_editor(result->filename, result->line_number);
+  }
 
   // Restore console color
   SetConsoleTextAttribute(hConsole, originalAttrs);
