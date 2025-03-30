@@ -10,6 +10,7 @@
 #include "bookmarks.h" // Added for bookmark support
 #include "common.h"
 #include "favorite_cities.h" // Added for favorite cities support
+#include "fzf.h"
 #include "structured_data.h" // Add this include
 
 // Syntax highlighting definitions
@@ -73,6 +74,7 @@ int lsh_focus_timer(char **args);
 int lsh_weather(char **args);
 // Text search command
 int lsh_grep(char **args);
+int lsh_fzf(char **args);
 
 // Commands with structured output
 TableData *lsh_dir_structured(char **args);
