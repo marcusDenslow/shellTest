@@ -6,6 +6,7 @@
 #include "builtins.h"
 #include "common.h"
 #include "filters.h"
+#include "fzf_native.h"
 #include "grep.h"
 #include "structured_data.h"
 #include <Psapi.h>
@@ -83,7 +84,7 @@ int (*builtin_func[])(char **) = {
     &lsh_unalias, // Added for alias support
     &lsh_aliases,    &lsh_bookmark, &lsh_bookmarks,   &lsh_goto,
     &lsh_unbookmark, &lsh_weather,  &lsh_grep,        &lsh_cities,
-    &lsh_fzf,
+    &lsh_fzf_native,
 };
 
 // Return the number of built-in commands
