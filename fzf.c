@@ -5,6 +5,7 @@
 
 #include "fzf.h"
 #include "builtins.h"
+#include <minwindef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -27,6 +28,8 @@
 #define FZF_FILE_TYPE_MD 8
 #define FZF_FILE_TYPE_JSON 9
 
+#define MAX_PREVIEW_CACHE 10
+
 // Structure to hold a single fuzzy match result
 typedef struct {
   char filename[MAX_PATH];        // Matched file path
@@ -45,8 +48,26 @@ typedef struct {
   char pattern[256];    // Search pattern
 } FuzzyResultList;
 
+// Global filtered results variables
+static FuzzyResult *filtered_results = NULL;
+static int filtered_count = 0;
+static int filtered_capacity = 0;
+
+typedef struct {
+  char filename[MAX_PATH];
+  char **lines;
+  int line_count;
+  int file_type;
+  DWORD last_accessed;
+} PreviewCache;
+
+static PreviewCache preview_cache[MAX_PREVIEW_CACHE];
+static int cache_count = 0;
+
 // Global result list
 static FuzzyResultList fuzzy_results = {0};
+
+static int get_file_type(const char *filename);
 
 // Forward declarations for internal functions
 static void add_fuzzy_result(const char *filename, const char *display_name,
@@ -60,6 +81,129 @@ static void show_file_detail_view(FuzzyResult *result);
 static void print_file_preview(HANDLE hConsole, const char *filename,
                                WORD originalAttrs, int right_width,
                                int left_width);
+
+static void apply_search_filter(HANDLE hConsole, const char *search_filter,
+                                int preview_top, int left_width,
+                                BOOL *full_redraw, int *previous_index);
+
+/**
+ * Case-insensitive substring search function
+ */
+static char *fzf_strcasestr(const char *haystack, const char *needle) {
+  if (!haystack || !needle)
+    return NULL;
+
+  size_t needle_len = strlen(needle);
+  if (needle_len == 0)
+    return (char *)haystack;
+
+  size_t haystack_len = strlen(haystack);
+  if (haystack_len < needle_len)
+    return NULL;
+
+  for (size_t i = 0; i <= haystack_len - needle_len; i++) {
+    if (_strnicmp(haystack + i, needle, needle_len) == 0) {
+      return (char *)(haystack + i);
+    }
+  }
+
+  return NULL;
+}
+
+static PreviewCache *get_cached_preview(const char *filename) {
+  int i;
+  DWORD current_time = GetTickCount();
+
+  // First check if preview is already cached
+  for (i = 0; i < cache_count; i++) {
+    if (_stricmp(preview_cache[i].filename, filename) == 0) {
+      // Update last accessed time
+      preview_cache[i].last_accessed = current_time;
+      return &preview_cache[i];
+    }
+  }
+
+  // Not found in cache, load it
+
+  // If cache is full, replace least recently used entry
+  if (cache_count >= MAX_PREVIEW_CACHE) {
+    int oldest_idx = 0;
+    DWORD oldest_time = preview_cache[0].last_accessed;
+
+    for (i = 1; i < cache_count; i++) {
+      if (preview_cache[i].last_accessed < oldest_time) {
+        oldest_idx = i;
+        oldest_time = preview_cache[i].last_accessed;
+      }
+    }
+
+    // Free the older cache entry
+    if (preview_cache[oldest_idx].lines) {
+      for (i = 0; i < preview_cache[oldest_idx].line_count; i++) {
+        free(preview_cache[oldest_idx].lines[i]);
+      }
+      free(preview_cache[oldest_idx].lines);
+    }
+
+    // Reuse this slot
+    i = oldest_idx;
+  } else {
+    // Use next available slot
+    i = cache_count++;
+  }
+
+  // Initialize new cache entry
+  strncpy(preview_cache[i].filename, filename, MAX_PATH - 1);
+  preview_cache[i].filename[MAX_PATH - 1] = '\0';
+  preview_cache[i].file_type = get_file_type(filename);
+  preview_cache[i].last_accessed = current_time;
+  preview_cache[i].lines = NULL;
+  preview_cache[i].line_count = 0;
+
+  // Load file content into cache
+  FILE *file = fopen(filename, "r");
+  if (!file) {
+    return &preview_cache[i]; // Return empty cache entry
+  }
+
+  // Allocate initial lines array (start with space for 50 lines)
+  int capacity = 50;
+  preview_cache[i].lines = (char **)malloc(capacity * sizeof(char *));
+  if (!preview_cache[i].lines) {
+    fclose(file);
+    return &preview_cache[i]; // Return empty cache entry on allocation failure
+  }
+
+  // Read file line by line
+  char buffer[4096];
+  while (fgets(buffer, sizeof(buffer), file)) {
+    // Remove newline if present
+    size_t len = strlen(buffer);
+    if (len > 0 && buffer[len - 1] == '\n') {
+      buffer[len - 1] = '\0';
+      len--;
+    }
+
+    // Expand capacity if needed
+    if (preview_cache[i].line_count >= capacity) {
+      capacity *= 2;
+      char **new_lines =
+          (char **)realloc(preview_cache[i].lines, capacity * sizeof(char *));
+      if (!new_lines) {
+        // Failed to expand, just use what we have
+        break;
+      }
+      preview_cache[i].lines = new_lines;
+    }
+
+    // Store the line
+    preview_cache[i].lines[preview_cache[i].line_count] = _strdup(buffer);
+    preview_cache[i].line_count++;
+  }
+
+  fclose(file);
+  return &preview_cache[i];
+}
 
 /**
  * Determine file type from extension (our simple implementation since the
@@ -393,25 +537,18 @@ static int compare_fuzzy_results(const void *a, const void *b) {
   return resultB->score - resultA->score;
 }
 
-/**
- * Print a file preview for the selected result
- */
-static void print_file_preview(HANDLE hConsole, const char *filename,
-                               WORD originalAttrs, int right_width,
-                               int left_width) {
-  // Try to open the file
-  FILE *file = fopen(filename, "r");
-  if (!file) {
+static void print_file_preview_optimized(HANDLE hConsole, const char *filename,
+                                         WORD originalAttrs, int right_width,
+                                         int left_width,
+                                         int max_preview_lines) {
+  PreviewCache *cache = get_cached_preview(filename);
+
+  // Handle empty cache or failed loading
+  if (!cache || !cache->lines || cache->line_count == 0) {
     SetConsoleTextAttribute(hConsole, originalAttrs);
-    printf("<Could not open file>");
+    printf("<Could not load preview>");
     return;
   }
-
-  // Determine file type for syntax highlighting
-  int type = get_file_type(filename);
-
-  // Calculate number of lines to show
-  int preview_lines = 30; // Show more lines in preview
 
   // Get current cursor position - this is where the preview starts
   CONSOLE_SCREEN_BUFFER_INFO csbi;
@@ -419,105 +556,191 @@ static void print_file_preview(HANDLE hConsole, const char *filename,
   int start_x = csbi.dwCursorPosition.X;
   int start_y = csbi.dwCursorPosition.Y;
 
-  // Read and print the file content with syntax highlighting
-  char line[4096];
-  int line_number = 1;
-  int preview_line = 0;
+  // Calculate number of lines to show
+  int lines_to_show = cache->line_count < max_preview_lines ? cache->line_count
+                                                            : max_preview_lines;
 
-  while (fgets(line, sizeof(line), file) && preview_line < preview_lines) {
-    // Remove newline if present
-    size_t len = strlen(line);
-    if (len > 0 && line[len - 1] == '\n') {
-      line[len - 1] = '\0';
-      len--;
-    }
+  // Get console width for text truncation
+  int max_text_width = right_width - 8;
+  if (max_text_width < 20)
+    max_text_width = 20; // Minimum width
 
-    // Skip empty lines at the beginning
-    if (line_number == 1 && len == 0) {
+  // Hide cursor during drawing
+  CONSOLE_CURSOR_INFO cursorInfo;
+  GetConsoleCursorInfo(hConsole, &cursorInfo);
+  BOOL originalCursorVisible = cursorInfo.bVisible;
+  cursorInfo.bVisible = FALSE;
+  SetConsoleCursorInfo(hConsole, &cursorInfo);
+
+  // First, clear the entire preview area
+  COORD clearPos;
+  DWORD written;
+  char clearBuf[1024];
+  memset(clearBuf, ' ',
+         right_width < sizeof(clearBuf) ? right_width : sizeof(clearBuf) - 1);
+  clearBuf[right_width < sizeof(clearBuf) ? right_width
+                                          : sizeof(clearBuf) - 1] = '\0';
+
+  for (int i = 0; i < lines_to_show; i++) {
+    SetConsoleCursorPosition(hConsole, (COORD){start_x, start_y + i});
+    printf("%s", clearBuf);
+  }
+
+  // Prepare all formatted lines in memory first
+  typedef struct {
+    char *text;
+    int has_comment;
+    int comment_pos;
+    char *comment_text;
+  } FormattedLine;
+
+  FormattedLine *formatted_lines =
+      (FormattedLine *)malloc(lines_to_show * sizeof(FormattedLine));
+  if (!formatted_lines) {
+    // Restore cursor and return if allocation fails
+    cursorInfo.bVisible = originalCursorVisible;
+    SetConsoleCursorInfo(hConsole, &cursorInfo);
+    return;
+  }
+
+  // First pass: prepare all the lines with formatting info
+  for (int i = 0; i < lines_to_show; i++) {
+    formatted_lines[i].text = (char *)malloc(max_text_width + 10);
+    if (!formatted_lines[i].text) {
+      formatted_lines[i].has_comment = 0;
+      formatted_lines[i].comment_text = NULL;
       continue;
     }
 
-    // Position cursor for this line in the preview area
-    SetConsoleCursorPosition(hConsole,
-                             (COORD){start_x, start_y + preview_line});
+    // Format line number
+    sprintf(formatted_lines[i].text, "%4d  ", i + 1);
 
-    // Print line number
-    printf("%4d  ", line_number++);
-
-    // Apply syntax highlighting based on file type
-    switch (type) {
-    case FZF_FILE_TYPE_C:
-    case FZF_FILE_TYPE_CPP:
-    case FZF_FILE_TYPE_H:
-      // Simplified syntax highlighting for preview
-      {
-        BOOL in_comment = FALSE;
-        BOOL in_string = FALSE;
-
-        for (size_t i = 0; i < len; i++) {
-          if (in_comment) {
-            set_color(COLOR_COMMENT);
-            putchar(line[i]);
-            if (line[i] == '*' && i + 1 < len && line[i + 1] == '/') {
-              putchar(line[++i]);
-              in_comment = FALSE;
-              reset_color();
-            }
-          } else if (in_string) {
-            set_color(COLOR_STRING);
-            putchar(line[i]);
-            if (line[i] == '"' && (i == 0 || line[i - 1] != '\\')) {
-              in_string = FALSE;
-              reset_color();
-            }
-          } else if (line[i] == '/' && i + 1 < len && line[i + 1] == '*') {
-            in_comment = TRUE;
-            set_color(COLOR_COMMENT);
-            putchar(line[i]);
-            putchar(line[++i]);
-          } else if (line[i] == '/' && i + 1 < len && line[i + 1] == '/') {
-            set_color(COLOR_COMMENT);
-            printf("%s", line + i);
-            break;
-          } else if (line[i] == '"') {
-            in_string = TRUE;
-            set_color(COLOR_STRING);
-            putchar(line[i]);
-          } else if (line[i] == '#' && (i == 0 || isspace(line[i - 1]))) {
-            // Preprocessor directive
-            set_color(COLOR_PREPROCESSOR);
-            putchar(line[i]);
-          } else {
-            putchar(line[i]);
-          }
-        }
-
-        reset_color();
-      }
-      break;
-
-    case FZF_FILE_TYPE_PY:
-    case FZF_FILE_TYPE_JS:
-    case FZF_FILE_TYPE_HTML:
-    case FZF_FILE_TYPE_CSS:
-    case FZF_FILE_TYPE_MD:
-    case FZF_FILE_TYPE_JSON:
-      // More specific highlighting could be implemented
-      // For now, just print in default color
-      printf("%s", line);
-      break;
-
-    default:
-      // No syntax highlighting for unknown file types
-      printf("%s", line);
-      break;
+    // Get the line and truncate if needed
+    char *line = cache->lines[i];
+    size_t line_len = strlen(line);
+    if ((int)line_len > max_text_width - 6) { // Account for line number format
+      strncat(formatted_lines[i].text, line, max_text_width - 9);
+      strcat(formatted_lines[i].text, "...");
+      line_len = max_text_width - 6;
+    } else {
+      strcat(formatted_lines[i].text, line);
     }
 
-    // Move to next line in preview area (don't use printf("\n"))
-    preview_line++;
+    // Find comments in C/C++ and Python files
+    formatted_lines[i].has_comment = 0;
+    formatted_lines[i].comment_text = NULL;
+
+    switch (cache->file_type) {
+    case FZF_FILE_TYPE_C:
+    case FZF_FILE_TYPE_CPP:
+    case FZF_FILE_TYPE_H: {
+      char *comment = strstr(line, "//");
+      if (comment) {
+        formatted_lines[i].has_comment = 1;
+        formatted_lines[i].comment_pos =
+            comment - line + 6; // +6 for line number format
+        formatted_lines[i].comment_text = _strdup(comment);
+      }
+      break;
+    }
+    case FZF_FILE_TYPE_PY: {
+      char *comment = strchr(line, '#');
+      if (comment) {
+        formatted_lines[i].has_comment = 1;
+        formatted_lines[i].comment_pos =
+            comment - line + 6; // +6 for line number format
+        formatted_lines[i].comment_text = _strdup(comment);
+      }
+      break;
+    }
+    }
   }
 
-  fclose(file);
+  // Second pass: draw all the lines efficiently
+  for (int i = 0; i < lines_to_show; i++) {
+    if (!formatted_lines[i].text)
+      continue;
+
+    // Position cursor once per line
+    SetConsoleCursorPosition(hConsole, (COORD){start_x, start_y + i});
+
+    if (formatted_lines[i].has_comment && formatted_lines[i].comment_text) {
+      // Print up to the comment
+      SetConsoleTextAttribute(hConsole, originalAttrs);
+      printf("%.*s", formatted_lines[i].comment_pos, formatted_lines[i].text);
+
+      // Print comment in comment color
+      set_color(COLOR_COMMENT);
+      printf("%s", formatted_lines[i].comment_text);
+      reset_color();
+    } else {
+      // No comment, print the whole line
+      SetConsoleTextAttribute(hConsole, originalAttrs);
+      printf("%s", formatted_lines[i].text);
+    }
+  }
+
+  // Clean up
+  for (int i = 0; i < lines_to_show; i++) {
+    if (formatted_lines[i].text) {
+      free(formatted_lines[i].text);
+    }
+    if (formatted_lines[i].comment_text) {
+      free(formatted_lines[i].comment_text);
+    }
+  }
+  free(formatted_lines);
+
+  // Restore cursor visibility
+  cursorInfo.bVisible = originalCursorVisible;
+  SetConsoleCursorInfo(hConsole, &cursorInfo);
+}
+
+/**
+ * Apply search filter to results
+ */
+static void apply_search_filter(HANDLE hConsole, const char *search_filter,
+                                int preview_top, int left_width,
+                                BOOL *full_redraw, int *previous_index) {
+  // Show "Filtering..." indicator during search
+  if (search_filter[0] != '\0') {
+    SetConsoleCursorPosition(hConsole,
+                             (COORD){left_width + 3, preview_top + 1});
+    SetConsoleTextAttribute(hConsole, COLOR_INFO);
+    printf("Filtering...");
+  }
+
+  // Apply filter to original results
+  if (filtered_results) {
+    free(filtered_results);
+    filtered_results = NULL;
+  }
+
+  filtered_count = 0;
+  filtered_capacity = fuzzy_results.count > 0 ? fuzzy_results.count : 10;
+  filtered_results =
+      (FuzzyResult *)malloc(filtered_capacity * sizeof(FuzzyResult));
+
+  if (filtered_results) {
+    // Filter results based on search term
+    for (int i = 0; i < fuzzy_results.count; i++) {
+      // Case insensitive search
+      if (search_filter[0] == '\0' ||
+          fzf_strcasestr(fuzzy_results.results[i].display_name,
+                         search_filter)) {
+        filtered_results[filtered_count++] = fuzzy_results.results[i];
+      }
+    }
+
+    // Reset current index if it's now out of bounds
+    if (fuzzy_results.current_index >= filtered_count) {
+      fuzzy_results.current_index = filtered_count > 0 ? 0 : -1;
+    }
+  }
+
+  // Force full redraw after filter change
+  *full_redraw = TRUE;
+  *previous_index = -1;
 }
 
 /**
@@ -564,13 +787,29 @@ static void display_fuzzy_results(void) {
   int filter_pos = 0;
   BOOL filter_active = FALSE;
 
-  // Filtered results
-  FuzzyResult *filtered_results = NULL;
-  int filtered_count = 0;
-  int filtered_capacity = 0;
+  // Debounce search variables
+  DWORD last_filter_change = 0;
+  BOOL need_filter_update = FALSE;
+  const DWORD FILTER_DELAY = 500; // 500ms debounce time
+
+  // Tracking variables for UI optimization
+  BOOL console_size_changed = TRUE; // Force full redraw first time
+  int last_console_width = 0;
+  int last_console_height = 0;
+
+  // Last drawn preview file
+  char last_preview_file[MAX_PATH] = "";
+  DWORD last_preview_time = 0;
+  const DWORD PREVIEW_THROTTLE = 100; // 100ms throttle for previews
 
   // Main navigation loop
   while (fuzzy_results.is_active) {
+    // Get current time for debounce check
+    DWORD current_time = GetTickCount();
+    BOOL should_apply_filter =
+        need_filter_update &&
+        (current_time - last_filter_change >= FILTER_DELAY);
+
     // Hide cursor during drawing to prevent jumping
     CONSOLE_CURSOR_INFO cursorInfo = {1, FALSE}; // Size 1, invisible
     SetConsoleCursorInfo(hConsole, &cursorInfo);
@@ -580,23 +819,33 @@ static void display_fuzzy_results(void) {
     int console_width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
     int console_height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
 
+    // Check if console size changed
+    if (console_width != last_console_width ||
+        console_height != last_console_height) {
+      console_size_changed = TRUE;
+      last_console_width = console_width;
+      last_console_height = console_height;
+    }
+
     // Layout calculations
     int left_width = 40; // Fixed width for file list
     if (left_width > console_width / 3)
       left_width = console_width / 3;
 
     int right_width = console_width - left_width - 3; // Space for separators
-    int list_height = console_height -
-                      9; // Reserve space for headers, footers, and search bar
+    int list_height =
+        console_height - 9; // Reserve space for headers, footers, search
     if (list_height < 5)
       list_height = 5; // Minimum reasonable size
 
     // Calculate preview area position
     int preview_top = 6; // After header and search bar
     int preview_height = list_height - 1;
+    int max_preview_lines = 20; // Limit preview size for performance
 
     // Only redraw everything if dimensions changed or first time
-    BOOL full_redraw = (previous_index == -1);
+    BOOL full_redraw = (previous_index == -1) || console_size_changed;
+    console_size_changed = FALSE;
 
     if (full_redraw) {
       // Draw header
@@ -615,47 +864,24 @@ static void display_fuzzy_results(void) {
       SetConsoleCursorPosition(hConsole, (COORD){0, 2});
       SetConsoleTextAttribute(hConsole, COLOR_BOX);
       for (int i = 0; i < console_width; i++)
-        printf("─");
+        printf("-");
 
       printf("\n\n");
     }
 
-    // Apply search filter if active
-    if (filter_active && search_filter[0] != '\0') {
-      // Apply filter to original results
-      // First free any previous filtered results
-      if (filtered_results) {
-        free(filtered_results);
-        filtered_results = NULL;
-      }
+    // Apply search filter if enough time has passed since last keystroke
+    if (should_apply_filter) {
+      apply_search_filter(hConsole, search_filter, preview_top, left_width,
+                          &full_redraw, &previous_index);
+      need_filter_update = FALSE;
+    }
 
+    // If we're not actively filtering and search is empty, use original results
+    if (!filter_active && search_filter[0] == '\0' && filtered_results) {
+      free(filtered_results);
+      filtered_results = NULL;
       filtered_count = 0;
-      filtered_capacity = fuzzy_results.count > 0 ? fuzzy_results.count : 10;
-      filtered_results =
-          (FuzzyResult *)malloc(filtered_capacity * sizeof(FuzzyResult));
-
-      if (filtered_results) {
-        // Filter results based on search term
-        for (int i = 0; i < fuzzy_results.count; i++) {
-          // Case insensitive search
-          if (my_strcasestr(fuzzy_results.results[i].display_name,
-                            search_filter)) {
-            filtered_results[filtered_count++] = fuzzy_results.results[i];
-          }
-        }
-
-        // Reset current index if it's now out of bounds
-        if (fuzzy_results.current_index >= filtered_count) {
-          fuzzy_results.current_index = filtered_count > 0 ? 0 : -1;
-        }
-      }
-    } else {
-      // Not filtering - free any filtered results
-      if (filtered_results) {
-        free(filtered_results);
-        filtered_results = NULL;
-        filtered_count = 0;
-      }
+      full_redraw = TRUE;
     }
 
     // Get the effective results array and count
@@ -690,213 +916,104 @@ static void display_fuzzy_results(void) {
 
     // Only redraw the list if needed
     if (full_redraw || previous_index != fuzzy_results.current_index) {
-      // If just changing selection (not a full redraw), only update the
-      // affected items
-      if (!full_redraw && previous_index != -1 &&
-          previous_index < effective_count) {
-        // First, update the previously selected item to remove highlight
-        if (previous_index >= start_index &&
-            previous_index < start_index + visible_items) {
-          int prev_display_idx = previous_index - start_index;
-          // Position cursor for previous selection
-          SetConsoleCursorPosition(hConsole, (COORD){0, 3 + prev_display_idx});
+      // Draw the file list first
+      for (int i = 0; i < visible_items; i++) {
+        int result_idx = start_index + i;
+        FuzzyResult *result = &effective_results[result_idx];
 
-          // Normal color for previously selected item
-          SetConsoleTextAttribute(hConsole, originalAttrs);
-          printf("  "); // Remove arrow
+        // Position cursor for this list item
+        SetConsoleCursorPosition(hConsole, (COORD){0, 4 + i});
 
-          // Extract just the filename from path
-          char *filename = effective_results[previous_index].filename;
-          char *last_slash = strrchr(filename, '\\');
-          if (last_slash) {
-            filename = last_slash + 1;
-          }
-
-          // Display filename without highlight
-          char display_name[40] = {0};
-          strncpy(display_name, filename, sizeof(display_name) - 1);
-          if (strlen(display_name) > (size_t)(left_width - 10)) {
-            display_name[left_width - 13] = '.';
-            display_name[left_width - 12] = '.';
-            display_name[left_width - 11] = '.';
-            display_name[left_width - 10] = '\0';
-          }
-
-          printf("%-*s", left_width - 2, display_name);
+        // Clear this line
+        for (int j = 0; j < left_width; j++) {
+          printf(" ");
         }
+        SetConsoleCursorPosition(hConsole, (COORD){0, 4 + i});
 
-        // Now update the newly selected item to add highlight
-        if (fuzzy_results.current_index >= start_index &&
-            fuzzy_results.current_index < start_index + visible_items) {
-          int curr_display_idx = fuzzy_results.current_index - start_index;
-          // Position cursor for new selection
-          SetConsoleCursorPosition(hConsole, (COORD){0, 3 + curr_display_idx});
-
-          // Highlight new selection
+        // Highlight current selection
+        if (result_idx == fuzzy_results.current_index) {
           SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
-          printf("→ ");
-
-          // Extract just the filename from path
-          char *filename =
-              effective_results[fuzzy_results.current_index].filename;
-          char *last_slash = strrchr(filename, '\\');
-          if (last_slash) {
-            filename = last_slash + 1;
-          }
-
-          // Display filename with highlight
-          char display_name[40] = {0};
-          strncpy(display_name, filename, sizeof(display_name) - 1);
-          if (strlen(display_name) > (size_t)(left_width - 10)) {
-            display_name[left_width - 13] = '.';
-            display_name[left_width - 12] = '.';
-            display_name[left_width - 11] = '.';
-            display_name[left_width - 10] = '\0';
-          }
-
-          printf("%-*s", left_width - 2, display_name);
-        }
-      } else {
-        // Full redraw of the file list is needed
-        // Hide cursor during full redraw to reduce flicker
-        CONSOLE_CURSOR_INFO cursorInfo = {1, FALSE}; // Size 1, invisible
-        SetConsoleCursorInfo(hConsole, &cursorInfo);
-
-        // Draw the file list first (complete separate entity)
-        for (int i = 0; i < visible_items; i++) {
-          int result_idx = start_index + i;
-          if (result_idx >= effective_count)
-            break;
-
-          FuzzyResult *result = &effective_results[result_idx];
-
-          // Position cursor for this list item
-          SetConsoleCursorPosition(hConsole, (COORD){0, 3 + i});
-
-          // Extract just the filename from path
-          char *filename = result->filename;
-          char *last_slash = strrchr(filename, '\\');
-          if (last_slash) {
-            filename = last_slash + 1;
-          }
-
-          // Truncate filename if too long
-          char display_name[40] = {0};
-          strncpy(display_name, filename, sizeof(display_name) - 1);
-          if (strlen(display_name) > (size_t)(left_width - 10)) {
-            display_name[left_width - 13] = '.';
-            display_name[left_width - 12] = '.';
-            display_name[left_width - 11] = '.';
-            display_name[left_width - 10] = '\0';
-          }
-
-          // Highlight current selection
-          if (result_idx == fuzzy_results.current_index) {
-            SetConsoleTextAttribute(hConsole, COLOR_RESULT_HIGHLIGHT);
-            printf("→ ");
-          } else {
-            SetConsoleTextAttribute(hConsole, originalAttrs);
-            printf("  ");
-          }
-
-          // Print filename and line number
-          printf("%-*s", left_width - 2, display_name);
-        }
-
-        // Fill remaining list area with empty lines
-        for (int i = visible_items; i < list_height; i++) {
-          SetConsoleCursorPosition(hConsole, (COORD){0, 3 + i});
-          printf("%-*s", left_width, "");
-        }
-
-        // Draw the vertical separator line for the entire height
-        SetConsoleTextAttribute(hConsole, COLOR_BOX);
-        for (int i = 0; i < list_height; i++) {
-          SetConsoleCursorPosition(hConsole, (COORD){left_width, 3 + i});
-          printf(" │ ");
-        }
-      }
-
-      // Clear preview area first
-      SetConsoleTextAttribute(hConsole, originalAttrs);
-      for (int i = 0; i < preview_height; i++) {
-        SetConsoleCursorPosition(hConsole,
-                                 (COORD){left_width + 3, preview_top + i});
-        printf("%-*s", right_width, "");
-      }
-
-      // Get current result's filename for display
-      FuzzyResult *current = &effective_results[fuzzy_results.current_index];
-
-      // Extract directory and filename components
-      char *filename = current->filename;
-      char dirAndFile[MAX_PATH] = {0};
-
-      // Find the last backslash
-      char *lastSlash = strrchr(filename, '\\');
-      if (lastSlash) {
-        // Get the filename part (after last backslash)
-        char *filenamePart = lastSlash + 1;
-
-        // Get directory part (everything before last backslash)
-        char dirPart[MAX_PATH] = {0};
-        int dirLen = (int)(lastSlash - filename);
-        strncpy(dirPart, filename, dirLen);
-        dirPart[dirLen] = '\0';
-
-        // Find the last directory name (after the second-last backslash)
-        char *secondLastSlash = strrchr(dirPart, '\\');
-        if (secondLastSlash) {
-          // Use just the last directory name
-          snprintf(dirAndFile, sizeof(dirAndFile), "%s/%s", secondLastSlash + 1,
-                   filenamePart);
+          printf("-> ");
         } else {
-          // Use the entire directory part
-          snprintf(dirAndFile, sizeof(dirAndFile), "%s/%s", dirPart,
-                   filenamePart);
+          SetConsoleTextAttribute(hConsole, originalAttrs);
+          printf("   ");
         }
-      } else {
-        // No directory separator found, just use filename
-        snprintf(dirAndFile, sizeof(dirAndFile), "%s", filename);
+
+        // Print filename with match highlight if applicable
+        if (result->match_positions[0] != '\0') {
+          // Display with match highlighting
+          for (int j = 0; j < strlen(result->display_name); j++) {
+            if (result->match_positions[j] == 1) {
+              // Highlighted character
+              SetConsoleTextAttribute(hConsole, COLOR_MATCH);
+            } else {
+              // Normal character
+              SetConsoleTextAttribute(hConsole, originalAttrs);
+            }
+            printf("%c", result->display_name[j]);
+          }
+        } else {
+          // No match info, display normally
+          printf("%s", result->display_name);
+        }
+
+        // Reset color
+        SetConsoleTextAttribute(hConsole, originalAttrs);
       }
 
-      // Clear the entire line first
-      SetConsoleCursorPosition(hConsole,
-                               (COORD){left_width + 3, preview_top - 2});
-      // Print enough spaces to clear any previous content
-      for (int i = 0; i < right_width; i++) {
-        printf(" ");
+      // Fill any unused list rows with blank space
+      for (int i = visible_items; i < list_height; i++) {
+        SetConsoleCursorPosition(hConsole, (COORD){0, 4 + i});
+        for (int j = 0; j < left_width; j++) {
+          printf(" ");
+        }
       }
 
-      // Draw file path first - now with cleared line
-      SetConsoleCursorPosition(hConsole,
-                               (COORD){left_width + 3, preview_top - 2});
-      SetConsoleTextAttribute(hConsole, COLOR_INFO);
-      printf("File: %s", dirAndFile);
+      // Draw vertical separator
+      SetConsoleTextAttribute(hConsole, COLOR_BOX);
+      for (int i = 0; i < list_height; i++) {
+        SetConsoleCursorPosition(hConsole, (COORD){left_width, 4 + i});
+        printf(" | ");
+      }
 
-      // Empty line between path and preview title
-      SetConsoleCursorPosition(hConsole,
-                               (COORD){left_width + 3, preview_top - 1});
-      printf(" ");
-
-      // Draw preview title
-      SetConsoleCursorPosition(hConsole, (COORD){left_width + 3, preview_top});
-      SetConsoleTextAttribute(hConsole, COLOR_INFO);
-      printf("Preview:");
-
-      // Show preview for current item in dedicated area
+      // Draw file preview if we have a selected file
       if (fuzzy_results.current_index >= 0 &&
           fuzzy_results.current_index < effective_count) {
-        // Position for preview content
-        SetConsoleCursorPosition(hConsole,
-                                 (COORD){left_width + 3, preview_top + 1});
 
-        // Reset text color for preview
-        SetConsoleTextAttribute(hConsole, originalAttrs);
+        FuzzyResult *current = &effective_results[fuzzy_results.current_index];
 
-        // Print file preview with appropriate syntax highlighting
-        print_file_preview(hConsole, current->filename, originalAttrs,
-                           right_width, left_width);
+        // Only update preview if the file changed or it's been a while since
+        // last update
+        if (strcmp(current->filename, last_preview_file) != 0 ||
+            (current_time - last_preview_time) > PREVIEW_THROTTLE) {
+
+          // Clear preview area
+          for (int i = 0; i < preview_height; i++) {
+            SetConsoleCursorPosition(hConsole,
+                                     (COORD){left_width + 3, preview_top + i});
+            for (int j = 0; j < right_width; j++) {
+              printf(" ");
+            }
+          }
+
+          // Show file path
+          SetConsoleCursorPosition(hConsole,
+                                   (COORD){left_width + 3, preview_top});
+          SetConsoleTextAttribute(hConsole, COLOR_INFO);
+          printf("File: %s", current->filename);
+
+          // Show preview
+          SetConsoleCursorPosition(hConsole,
+                                   (COORD){left_width + 3, preview_top + 2});
+          SetConsoleTextAttribute(hConsole, originalAttrs);
+          print_file_preview_optimized(hConsole, current->filename,
+                                       originalAttrs, right_width, left_width,
+                                       max_preview_lines);
+
+          // Remember this file
+          strcpy(last_preview_file, current->filename);
+          last_preview_time = current_time;
+        }
       }
 
       // Remember what we just displayed
@@ -920,14 +1037,21 @@ static void display_fuzzy_results(void) {
     SetConsoleCursorPosition(hConsole, (COORD){0, 4 + list_height});
     SetConsoleTextAttribute(hConsole, COLOR_BOX);
     for (int i = 0; i < console_width; i++)
-      printf("─");
+      printf("-");
+
+    // Show file count info
+    SetConsoleCursorPosition(hConsole, (COORD){2, 3 + list_height});
+    if (filtered_results) {
+      printf("Showing %d of %d files", filtered_count, fuzzy_results.count);
+    } else {
+      printf("Showing %d files", fuzzy_results.count);
+    }
 
     // Navigation help
     SetConsoleCursorPosition(hConsole, (COORD){0, 5 + list_height});
     SetConsoleTextAttribute(hConsole, originalAttrs);
-    printf("Navigation: ↓/j - Next  ↑/k - Prev  Enter - Open  o - Full view / "
-           "- Search  "
-           "Esc/q - Exit");
+    printf("Navigation: j/DOWN - Next  k/UP - Prev  ENTER - Open  o - Full "
+           "view  / - Search  ESC/q - Exit");
 
     // Make cursor visible for search input
     if (filter_active) {
@@ -956,32 +1080,58 @@ static void display_fuzzy_results(void) {
           if (keyCode == VK_ESCAPE) {
             // Exit search mode
             filter_active = FALSE;
+            need_filter_update = TRUE;
+            last_filter_change =
+                GetTickCount() - FILTER_DELAY * 2; // Force immediate update
           } else if (keyCode == VK_RETURN) {
             // Apply filter and exit search mode
             filter_active = FALSE;
+            need_filter_update = TRUE;
+            last_filter_change =
+                GetTickCount() - FILTER_DELAY * 2; // Force immediate update
           } else if (keyCode == VK_BACK) {
             // Backspace - remove character
             if (filter_pos > 0) {
+              // Update the filter string
               memmove(&search_filter[filter_pos - 1],
                       &search_filter[filter_pos],
                       strlen(search_filter) - filter_pos + 1);
               filter_pos--;
+
+              // Update the search bar immediately
+              SetConsoleCursorPosition(hConsole, (COORD){8, 1});
+              SetConsoleTextAttribute(hConsole, originalAttrs);
+              printf("%-*s", console_width - 9, search_filter);
+              SetConsoleCursorPosition(hConsole, (COORD){8 + filter_pos, 1});
+
+              // Mark for filter update but debounce
+              need_filter_update = TRUE;
+              last_filter_change = GetTickCount();
             }
           } else {
             // Add character to filter
             char c = inputRecord.Event.KeyEvent.uChar.AsciiChar;
             if (isprint(c) && filter_pos < sizeof(search_filter) - 1) {
+              // Update the filter string
               memmove(&search_filter[filter_pos + 1],
                       &search_filter[filter_pos],
                       strlen(search_filter) - filter_pos + 1);
               search_filter[filter_pos] = c;
               filter_pos++;
+
+              // Update the search bar immediately
+              SetConsoleCursorPosition(hConsole, (COORD){8, 1});
+              SetConsoleTextAttribute(hConsole, originalAttrs);
+              printf("%-*s", console_width - 9, search_filter);
+              SetConsoleCursorPosition(hConsole, (COORD){8 + filter_pos, 1});
+
+              // Mark for filter update but debounce
+              need_filter_update = TRUE;
+              last_filter_change = GetTickCount();
             }
           }
 
-          // Force redraw when filtering
-          full_redraw = TRUE;
-          previous_index = -1;
+          // Skip the rest of the loop to avoid navigation handling
           continue;
         }
 
@@ -1034,13 +1184,8 @@ static void display_fuzzy_results(void) {
         case 'S':      // 's' for search
           // Activate search filter
           filter_active = TRUE;
-
           // If there's already filter text, position cursor at the end
           filter_pos = strlen(search_filter);
-
-          // Force redraw
-          full_redraw = TRUE;
-          previous_index = -1;
           break;
 
         case VK_ESCAPE:
@@ -1058,6 +1203,7 @@ static void display_fuzzy_results(void) {
     free(filtered_results);
   }
 
+  // Reset console attributes
   SetConsoleTextAttribute(hConsole, originalAttrs);
   SetConsoleMode(hStdin, originalMode);
 
@@ -1198,4 +1344,19 @@ static void show_file_detail_view(FuzzyResult *result) {
 
   // Reset console color
   SetConsoleTextAttribute(hConsole, originalAttrs);
+}
+
+/**
+ * Add cleanup function to free the preview cache when the program exits
+ */
+void cleanup_preview_cache(void) {
+  for (int i = 0; i < cache_count; i++) {
+    if (preview_cache[i].lines) {
+      for (int j = 0; j < preview_cache[i].line_count; j++) {
+        free(preview_cache[i].lines[j]);
+      }
+      free(preview_cache[i].lines);
+    }
+  }
+  cache_count = 0;
 }
