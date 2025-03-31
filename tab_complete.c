@@ -1974,14 +1974,12 @@ void init_command_registry(void) {
     return;
   initialized = 1;
 
-  // Existing commands with specific argument types
   register_command("goto", ARG_TYPE_BOOKMARK,
                    "Change to a bookmarked directory");
   register_command("unbookmark", ARG_TYPE_BOOKMARK, "Remove a bookmark");
   register_command("cd", ARG_TYPE_DIRECTORY, "Change directory");
   register_command("cat", ARG_TYPE_FILE, "Display file contents");
 
-  // New commands to add
   register_command("rmdir", ARG_TYPE_DIRECTORY, "Remove directory");
   register_command("del", ARG_TYPE_FILE, "Delete files");
   register_command("rm", ARG_TYPE_FILE, "Remove files");
@@ -1992,6 +1990,7 @@ void init_command_registry(void) {
   register_command("unalias", ARG_TYPE_ALIAS, "Remove an alias");
   register_command("weather", ARG_TYPE_FAVORITE_CITY,
                    "show weather information for a city");
+  register_command("clip", ARG_TYPE_FILE, "Copy file contents to clipboard");
 
   // Add more commands as needed
 }
