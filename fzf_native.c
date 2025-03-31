@@ -175,8 +175,8 @@ char *run_native_fzf_all(int recursive, char **args) {
   strcat(command, " --bind=\"ctrl-j:down,ctrl-k:up,/:toggle-search\"");
 
   // Add preview window showing file info or directory contents
-  strcat(command, " --preview=\"if exist {}\\NUL (dir /b {}) else (type {} "
-                  "2>NUL || echo Binary file)\"");
+  strcat(command, " --preview=\"if exist {}\\NUL (dir /b {}) else (bat "
+                  "--color=always {} 2>NUL || type {} 2>NUL)\"");
 
   // Add any additional arguments
   if (args && args[1] != NULL) {
