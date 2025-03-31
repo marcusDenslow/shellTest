@@ -77,6 +77,7 @@ int lsh_grep(char **args);
 int lsh_actual_grep(char **args);
 int lsh_ripgrep(char **args);
 int lsh_fzf_native(char **args);
+int lsh_clip(char **args);
 
 // Commands with structured output
 TableData *lsh_dir_structured(char **args);

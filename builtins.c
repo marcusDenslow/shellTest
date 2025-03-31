@@ -17,10 +17,13 @@
 #include <minwindef.h>
 #include <ole2.h>
 #include <olectl.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <tlhelp32.h>
+#include <winbase.h>
 #include <wincrypt.h>
 #include <wininet.h>
+#include <winuser.h>
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -69,7 +72,7 @@ char *builtin_str[] = {
     "unalias", // Added for alias support
     "aliases", // New command to list all aliases
     "bookmark", "bookmarks", "goto",    "unbookmark", "weather",     "grep",
-    "cities",   "fzf",       "ripgrep",
+    "cities",   "fzf",       "ripgrep", "clip",
 };
 
 // Add to the builtin_func array:
@@ -84,7 +87,7 @@ int (*builtin_func[])(char **) = {
     &lsh_unalias, // Added for alias support
     &lsh_aliases,    &lsh_bookmark, &lsh_bookmarks,   &lsh_goto,
     &lsh_unbookmark, &lsh_weather,  &lsh_grep,        &lsh_cities,
-    &lsh_fzf_native, &lsh_ripgrep,
+    &lsh_fzf_native, &lsh_ripgrep,  &lsh_clip,
 };
 
 // Return the number of built-in commands
@@ -3363,6 +3366,92 @@ char *extract_json_string(const char *json, const char *key) {
   }
 
   return value;
+}
+
+/**
+ * Copy file contents to clipboard
+ *
+ * @param args Command arguments (args[1] should be the filename)
+ * @return Always returns 1 to continue the shell
+ */
+int lsh_clip(char **args) {
+  if (args[1] == NULL) {
+    fprintf(stderr, "lsh: expected file argument to \"clip\"\n");
+    fprintf(stderr, "Usage: clip FILE\n");
+    return 1;
+  }
+
+  // Open the file
+  FILE *file = fopen(args[1], "rb");
+  if (file == NULL) {
+    fprintf(stderr, "lsh: cannot find '%s': ", args[1]);
+    perror("");
+    return 1;
+  }
+
+  // Get file size
+  fseek(file, 0, SEEK_END);
+  long file_size = ftell(file);
+  fseek(file, 0, SEEK_SET);
+
+  // Read file content
+  char *file_content = (char *)malloc(file_size + 1);
+  if (!file_content) {
+    fprintf(stderr, "lsh: failed to allocate memory for file content\n");
+    fclose(file);
+    return 1;
+  }
+
+  size_t bytes_read = fread(file_content, 1, file_size, file);
+  file_content[bytes_read] = '\0'; // Null-terminate the string
+  fclose(file);
+
+  // Allocate global memory for clipboard
+  HGLOBAL h_mem = GlobalAlloc(GMEM_MOVEABLE, bytes_read + 1);
+  if (h_mem == NULL) {
+    fprintf(stderr, "lsh: failed to allocate global memory for clipboard\n");
+    free(file_content);
+    return 1;
+  }
+
+  // Lock the memory and copy file content
+  char *clipboard_content = (char *)GlobalLock(h_mem);
+  if (clipboard_content == NULL) {
+    fprintf(stderr, "lsh: failed to lock global memory\n");
+    GlobalFree(h_mem);
+    free(file_content);
+    return 1;
+  }
+
+  memcpy(clipboard_content, file_content, bytes_read);
+  clipboard_content[bytes_read] = '\0'; // Null-terminate the string
+  GlobalUnlock(h_mem);
+
+  // Open clipboard and set data
+  if (!OpenClipboard(NULL)) {
+    fprintf(stderr, "lsh: failed to open clipboard\n");
+    GlobalFree(h_mem);
+    free(file_content);
+    return 1;
+  }
+
+  EmptyClipboard();
+  HANDLE h_clipboard_data = SetClipboardData(CF_TEXT, h_mem);
+  CloseClipboard();
+
+  if (h_clipboard_data == NULL) {
+    fprintf(stderr, "lsh: failed to set clipboard data\n");
+    GlobalFree(h_mem);
+    free(file_content);
+    return 1;
+  }
+
+  // Don't free h_mem here - Windows takes ownership of it
+  free(file_content);
+
+  printf("Copied contents of '%s' to clipboard (%ld bytes)\n", args[1],
+         bytes_read);
+  return 1;
 }
 
 // Exit the shell
