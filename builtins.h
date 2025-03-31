@@ -75,6 +75,7 @@ int lsh_weather(char **args);
 // Text search command
 int lsh_grep(char **args);
 int lsh_actual_grep(char **args);
+int lsh_ripgrep(char **args);
 int lsh_fzf_native(char **args);
 
 // Commands with structured output
