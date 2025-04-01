@@ -211,9 +211,6 @@ void update_command_frequency(const char *command) {
     return;
   }
 
-  // Debug output to see what's being tracked
-  printf("\nTracking frequency for: %s\n", command);
-
   // Check if command already exists in frequency list
   for (int i = 0; i < frequency_count; i++) {
     if (command_frequencies[i].command &&
@@ -221,7 +218,6 @@ void update_command_frequency(const char *command) {
       // Command found, increment count with higher weight
       command_frequencies[i].count +=
           2; // Give more weight to recently used commands
-      printf("Updated frequency count to: %d\n", command_frequencies[i].count);
 
       // Save frequencies immediately after updating
       save_frequencies_to_file();
@@ -254,7 +250,6 @@ void update_command_frequency(const char *command) {
   // Add the new command with initial count of 1
   command_frequencies[frequency_count].command = _strdup(command);
   command_frequencies[frequency_count].count = 1;
-  printf("Added new command with count: 1\n");
   frequency_count++;
 
   // Save frequencies immediately after adding
