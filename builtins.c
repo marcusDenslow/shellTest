@@ -8,6 +8,7 @@
 #include "filters.h"
 #include "fzf_native.h"
 #include "grep.h"
+#include "persistent_history.h"
 #include "structured_data.h"
 #include <Psapi.h>
 #include <ShlObj.h>
@@ -98,12 +99,12 @@ int lsh_num_builtins() { return sizeof(builtin_str) / sizeof(char *); }
  * Simply displays all defined aliases
  */
 
-// Add function to store commands in history with timestamps
 void lsh_add_to_history(const char *command) {
   if (command == NULL || command[0] == '\0') {
     return; // Don't add empty commands
   }
 
+  // Add to in-memory history for the current session
   // Free the string at the current index if it exists
   if (command_history[history_index].command != NULL) {
     free(command_history[history_index].command);
@@ -118,35 +119,44 @@ void lsh_add_to_history(const char *command) {
   // Update index and count
   history_index = (history_index + 1) % HISTORY_SIZE;
   history_count++;
+
+  // Also add to persistent history
+  add_to_persistent_history(command);
 }
 
-// Implement the history command with timestamps
 int lsh_history(char **args) {
+  int history_count = get_history_count();
+
   if (history_count == 0) {
     printf("No commands in history\n");
     return 1;
   }
 
-  // Calculate how many commands to display
-  int num_to_display =
-      (history_count < HISTORY_SIZE) ? history_count : HISTORY_SIZE;
+  // Determine how many entries to display
+  int entries_to_show = history_count;
 
-  // Calculate starting index
-  int start_idx;
-  if (history_count <= HISTORY_SIZE) {
-    // Haven't filled the buffer yet
-    start_idx = 0;
-  } else {
-    // Buffer is full, start from the oldest command
-    start_idx = history_index; // Next slot to overwrite contains oldest command
+  // If the user specified a number, use that
+  if (args[1] != NULL) {
+    int requested = atoi(args[1]);
+    if (requested > 0 && requested < history_count) {
+      entries_to_show = requested;
+    }
   }
 
-  // Display the commands with timestamps
-  for (int i = 0; i < num_to_display; i++) {
-    int idx = (start_idx + i) % HISTORY_SIZE;
-    SYSTEMTIME *ts = &command_history[idx].timestamp;
-    printf("[%02d:%02d:%02d] %s\n", ts->wHour, ts->wMinute, ts->wSecond,
-           command_history[idx].command);
+  // Calculate the starting index for display
+  int start_idx = history_count - entries_to_show;
+  if (start_idx < 0)
+    start_idx = 0;
+
+  // Display the entries with timestamps
+  printf("\nCommand History (most recent last):\n\n");
+  for (int i = start_idx; i < history_count; i++) {
+    PersistentHistoryEntry *entry = get_history_entry(i);
+    if (entry && entry->command) {
+      SYSTEMTIME *ts = &entry->timestamp;
+      printf("[%04d-%02d-%02d %02d:%02d:%02d] %s\n", ts->wYear, ts->wMonth,
+             ts->wDay, ts->wHour, ts->wMinute, ts->wSecond, entry->command);
+    }
   }
 
   return 1;

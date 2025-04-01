@@ -6,6 +6,7 @@
 #include "fzf_native.h"
 #include "common.h"
 #include "line_reader.h"
+#include "shell.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

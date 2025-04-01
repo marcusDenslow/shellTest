@@ -13,6 +13,7 @@
 #include "filters.h"
 #include "git_integration.h" // Added for Git repository detection
 #include "line_reader.h"
+#include "persistent_history.h"
 #include "structured_data.h"
 #include "tab_complete.h" // Added for tab completion support
 #include <stdio.h>
@@ -731,7 +732,7 @@ void get_path_display(const char *cwd, char *parent_dir_name,
 }
 
 /**
- * Main shell loop (updated to fix Git info updates)
+ * Main shell loop (updated with persistent history support)
  */
 void lsh_loop(void) {
   char *line;
@@ -765,7 +766,11 @@ void lsh_loop(void) {
   // Initialize bookmarks
   init_bookmarks();
 
+  // Initialize favorite cities
   init_favorite_cities();
+
+  // Initialize persistent history
+  init_persistent_history();
 
   // Display the welcome banner at startup
   display_welcome_banner();
@@ -872,18 +877,43 @@ void lsh_loop(void) {
     // Read user input
     line = lsh_read_line();
 
-    // Add command to history if not empty
-    if (line[0] != '\0') {
-      lsh_add_to_history(line);
-    }
-
-    // Split and execute commands
+    // Split commands
     commands = lsh_split_commands(line);
 
     // Check if there are any pipes (more than one command)
     int pipe_count = 0;
     while (commands[pipe_count] != NULL)
       pipe_count++;
+
+    // Record the final command to history
+    if (pipe_count >= 1 && line[0] != '\0') {
+      // Reconstruct the final command for history (for accurate frequency
+      // tracking)
+      char final_command[LSH_RL_BUFSIZE] = "";
+
+      for (int cmd_idx = 0; cmd_idx < pipe_count; cmd_idx++) {
+        char **args = commands[cmd_idx];
+
+        // Add pipe symbol between commands
+        if (cmd_idx > 0) {
+          strcat(final_command, " | ");
+        }
+
+        // Add each argument for this command
+        for (int arg_idx = 0; args[arg_idx] != NULL; arg_idx++) {
+          if (arg_idx > 0) {
+            strcat(final_command, " ");
+          }
+          strcat(final_command, args[arg_idx]);
+        }
+      }
+
+      // Now add the fully constructed command to history
+      lsh_add_to_history(final_command);
+
+      // Debug print frequencies (uncomment this line to see current
+      // frequencies) debug_print_frequencies();
+    }
 
     // Hide status bar before command execution to prevent ghost duplicates
     hide_status_bar(hConsole);
@@ -908,61 +938,9 @@ void lsh_loop(void) {
 
   } while (status);
 
-  // Clean up aliases on exit
+  // Clean up
   cleanup_aliases();
-
-  // Clean up bookmarks on exit
   cleanup_bookmarks();
-
   cleanup_favorite_cities();
+  cleanup_persistent_history(); // Added cleanup for persistent history
 }
-
-/**
- * This function makes sure we always have enough space for status bar
- * Modified to maintain better separation between prompt and status bar
- */
-// void ensure_status_bar_space(HANDLE hConsole) {
-//   CONSOLE_SCREEN_BUFFER_INFO csbi;
-//   if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
-//     return;
-//   }
-//
-//   // We want at least 2 lines between cursor and bottom of window
-//   // 1 for the cursor line, 1 for separation
-//   if (csbi.dwCursorPosition.Y >= csbi.srWindow.Bottom - 1) {
-//     // First clear the status bar if it exists
-//     COORD statusPos = {0, csbi.srWindow.Bottom};
-//     DWORD written;
-//     FillConsoleOutputCharacter(hConsole, ' ', csbi.dwSize.X, statusPos,
-//                                &written);
-//     FillConsoleOutputAttribute(hConsole, g_normal_attributes, csbi.dwSize.X,
-//                                statusPos, &written);
-//
-//     // Create a scroll rectangle - everything except the status bar
-//     SMALL_RECT scrollRect;
-//     scrollRect.Left = 0;
-//     scrollRect.Top = csbi.srWindow.Top;
-//     scrollRect.Right = csbi.dwSize.X - 1;
-//     scrollRect.Bottom = csbi.srWindow.Bottom - 1; // Exclude status bar
-//
-//     // The coordinate to move the rectangle to
-//     COORD destOrigin;
-//     destOrigin.X = 0;
-//     destOrigin.Y = csbi.srWindow.Top - 1; // Move up one line
-//
-//     // Fill character for the vacated lines
-//     CHAR_INFO fill;
-//     fill.Char.AsciiChar = ' ';
-//     fill.Attributes = g_normal_attributes;
-//
-//     // Scroll the window contents up
-//     ScrollConsoleScreenBuffer(hConsole, &scrollRect, NULL, destOrigin,
-//     &fill);
-//
-//     // Update cursor position
-//     COORD newCursorPos;
-//     newCursorPos.X = csbi.dwCursorPosition.X;
-//     newCursorPos.Y = csbi.dwCursorPosition.Y - 1;
-//     SetConsoleCursorPosition(hConsole, newCursorPos);
-//   }
-// }

@@ -6,6 +6,7 @@
 #include "line_reader.h"
 #include "bookmarks.h" // Added for bookmark support
 #include "builtins.h"  // Added for history access
+#include "persistent_history.h"
 #include "tab_complete.h"
 
 // Define key codes
@@ -40,10 +41,6 @@ int try_bookmark_completion(char *buffer, int position, HANDLE hConsole,
   return 0;
 }
 
-/**
- * Read a line of input from the user with context-aware tab completion
- * Modified to fix suggestion behavior with Enter key
- */
 char *lsh_read_line(void) {
   // Allocate buffer for the input
   int bufsize = LSH_RL_BUFSIZE;
@@ -76,6 +73,10 @@ char *lsh_read_line(void) {
 
   // Flag to track if we're showing a suggestion
   int showing_suggestion = 0;
+
+  // Flag to track if we're showing a history suggestion (vs command/file
+  // suggestion)
+  int showing_history_suggestion = 0;
 
   // Flag to track if we're ready to execute after accepting a suggestion
   int ready_to_execute = 0;
@@ -138,53 +139,97 @@ char *lsh_read_line(void) {
       free(suggestion);
       suggestion = NULL;
       showing_suggestion = 0;
+      showing_history_suggestion = 0;
     }
 
     // Find and display new suggestion only if we're not in tab cycling mode
     if (!tab_matches && !ready_to_execute && position == strlen(buffer)) {
       buffer[position] = '\0'; // Ensure buffer is null-terminated
 
-      // Use context-aware best match finding
-      suggestion = find_context_best_match(buffer, position);
+      // Try to find frequency-based suggestions first
+      int freq_suggestions_count = 0;
+      char **freq_suggestions = NULL;
 
-      if (suggestion) {
+      // Only try frequency suggestions if we have at least a few characters
+      // typed
+      if (strlen(buffer) >= 2) {
+        freq_suggestions =
+            get_frequency_suggestions(buffer, &freq_suggestions_count);
+      }
+
+      if (freq_suggestions && freq_suggestions_count > 0) {
+        // Use the highest frequency suggestion
+        suggestion = freq_suggestions[0];
+
         // Get current cursor position
         GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
 
-        // Find the start of the current word
-        int word_start = position - 1;
-        while (word_start >= 0 && buffer[word_start] != ' ' &&
-               buffer[word_start] != '\\' && buffer[word_start] != '|') {
-          word_start--;
-        }
-        word_start++; // Move past the space, backslash, or pipe
+        // Set text color to gray for suggestion
+        SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
 
-        // Extract just the last word from the suggested path
-        const char *lastWord = strrchr(suggestion, ' ');
-        if (lastWord) {
-          lastWord++; // Move past the space
-        } else {
-          lastWord = suggestion;
-        }
-
-        // Extract just the last word from what we've typed so far
-        char currentWord[1024] = "";
-        strncpy(currentWord, buffer + word_start, position - word_start);
-        currentWord[position - word_start] = '\0';
-
-        // Only display the suggestion if it starts with what we're typing (case
-        // insensitive) and hasn't been completely typed already
-        if (_strnicmp(lastWord, currentWord, strlen(currentWord)) == 0 &&
-            _stricmp(lastWord, currentWord) != 0) {
-          // Set text color to gray for suggestion
-          SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
-          // Print only the part of the suggestion that hasn't been typed yet
-          printf("%s", lastWord + strlen(currentWord));
-          // Reset color
-          SetConsoleTextAttribute(hConsole, originalAttributes);
+        // Calculate and display the part of suggestion not yet typed
+        const char *completion = suggestion + strlen(buffer);
+        if (completion && *completion) {
+          printf("%s", completion);
           // Reset cursor position
           SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
           showing_suggestion = 1;
+          showing_history_suggestion = 1; // This is a history-based suggestion
+        }
+
+        // Reset color
+        SetConsoleTextAttribute(hConsole, originalAttributes);
+
+        // Free all but the first suggestion which is now stored in 'suggestion'
+        for (int i = 1; i < freq_suggestions_count; i++) {
+          free(freq_suggestions[i]);
+        }
+        free(freq_suggestions);
+      } else {
+        // Fall back to context-aware best match
+        suggestion = find_context_best_match(buffer, position);
+
+        if (suggestion) {
+          // Get current cursor position
+          GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
+
+          // Find the start of the current word
+          int word_start = position - 1;
+          while (word_start >= 0 && buffer[word_start] != ' ' &&
+                 buffer[word_start] != '\\' && buffer[word_start] != '|') {
+            word_start--;
+          }
+          word_start++; // Move past the space, backslash, or pipe
+
+          // Extract just the last word from the suggested path
+          const char *lastWord = strrchr(suggestion, ' ');
+          if (lastWord) {
+            lastWord++; // Move past the space
+          } else {
+            lastWord = suggestion;
+          }
+
+          // Extract just the last word from what we've typed so far
+          char currentWord[1024] = "";
+          strncpy(currentWord, buffer + word_start, position - word_start);
+          currentWord[position - word_start] = '\0';
+
+          // Only display the suggestion if it starts with what we're typing
+          // (case insensitive) and hasn't been completely typed already
+          if (_strnicmp(lastWord, currentWord, strlen(currentWord)) == 0 &&
+              _stricmp(lastWord, currentWord) != 0) {
+            // Set text color to gray for suggestion
+            SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
+            // Print only the part of the suggestion that hasn't been typed yet
+            printf("%s", lastWord + strlen(currentWord));
+            // Reset color
+            SetConsoleTextAttribute(hConsole, originalAttributes);
+            // Reset cursor position
+            SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
+            showing_suggestion = 1;
+            showing_history_suggestion =
+                0; // This is a command/file suggestion, not history
+          }
         }
       }
     }
@@ -192,9 +237,11 @@ char *lsh_read_line(void) {
     // Read a character
     c = _getch();
 
-    // Check for CTRL key state for Ctrl+Backspace support
+    // Check for CTRL and SHIFT key states
     SHORT ctrlKeyState = GetKeyState(VK_CONTROL);
+    SHORT shiftKeyState = GetKeyState(VK_SHIFT);
     int ctrlPressed = (ctrlKeyState & 0x8000) != 0;
+    int shiftPressed = (shiftKeyState & 0x8000) != 0;
 
     // Early detection for arrow key sequences
     if (c == 0 || c == 224) {
@@ -361,6 +408,84 @@ char *lsh_read_line(void) {
       }
 
       continue;
+    }
+    // Check for Shift+Enter (Enter key with shift pressed)
+    else if (c == KEY_ENTER && shiftPressed) {
+      // Handle Shift+Enter for accepting history suggestion
+      if (showing_suggestion && showing_history_suggestion && suggestion) {
+        // Copy the suggestion to the buffer
+        strcpy(buffer, suggestion);
+        position = strlen(buffer);
+
+        // Hide cursor to prevent flicker
+        CONSOLE_CURSOR_INFO cursorInfo;
+        GetConsoleCursorInfo(hConsole, &cursorInfo);
+        BOOL originalCursorVisible = cursorInfo.bVisible;
+        cursorInfo.bVisible = FALSE;
+        SetConsoleCursorInfo(hConsole, &cursorInfo);
+
+        // Clear the line
+        DWORD numCharsWritten;
+        COORD clearPos = promptEndPos;
+        FillConsoleOutputCharacter(hConsole, ' ', 120, clearPos,
+                                   &numCharsWritten);
+        FillConsoleOutputAttribute(hConsole, originalAttributes, 120, clearPos,
+                                   &numCharsWritten);
+
+        // Move cursor back to beginning
+        SetConsoleCursorPosition(hConsole, promptEndPos);
+
+        // Print the full command
+        buffer[position] = '\0';
+        WriteConsole(hConsole, buffer, strlen(buffer), &numCharsWritten, NULL);
+
+        // Restore cursor visibility
+        cursorInfo.bVisible = originalCursorVisible;
+        SetConsoleCursorInfo(hConsole, &cursorInfo);
+
+        // Clean up
+        free(suggestion);
+        suggestion = NULL;
+        showing_suggestion = 0;
+        showing_history_suggestion = 0;
+
+        // Don't execute yet - just keep the suggestion for editing
+        ready_to_execute = 0;
+
+        // Continue editing
+        continue;
+      } else {
+        // If no history suggestion is showing, treat as regular Enter
+        putchar('\n'); // Echo newline
+        buffer[position] = '\0';
+
+        // Clean up
+        if (suggestion) {
+          free(suggestion);
+          suggestion = NULL;
+        }
+        showing_suggestion = 0;
+        showing_history_suggestion = 0;
+
+        // Clean up tab completion resources
+        if (tab_matches) {
+          for (int i = 0; i < tab_num_matches; i++) {
+            free(tab_matches[i]);
+          }
+          free(tab_matches);
+          tab_matches = NULL;
+          tab_num_matches = 0;
+          tab_index = 0;
+          last_tab_prefix[0] = '\0';
+        }
+
+        // Reset history navigation
+        history_navigation_index = -1;
+
+        // Restore original console mode
+        SetConsoleMode(hStdin, oldMode);
+        return buffer;
+      }
     } else if (c == KEY_ENTER) {
       // User pressed Enter - end input
 
@@ -375,6 +500,7 @@ char *lsh_read_line(void) {
           suggestion = NULL;
         }
         showing_suggestion = 0;
+        showing_history_suggestion = 0;
 
         // Clean up tab completion resources
         if (tab_matches) {
@@ -478,6 +604,7 @@ char *lsh_read_line(void) {
           suggestion = NULL;
         }
         showing_suggestion = 0;
+        showing_history_suggestion = 0;
 
         // Clean up tab completion resources
         if (tab_matches) {
@@ -665,7 +792,56 @@ char *lsh_read_line(void) {
         continue;
       }
 
-      // Original tab completion code begins here...
+      // TAB now only accepts command/file suggestions, not history suggestions
+      if (showing_suggestion && !showing_history_suggestion && suggestion) {
+        // Accept the command/file suggestion (not history)
+        // Find the start of the current word
+        int word_start = position - 1;
+        while (word_start >= 0 && buffer[word_start] != ' ' &&
+               buffer[word_start] != '\\' && buffer[word_start] != '|') {
+          word_start--;
+        }
+        word_start++; // Move past the space, backslash, or pipe
+
+        // Extract the suggestion (either last word or full path)
+        const char *lastWord = strrchr(suggestion, ' ');
+        if (lastWord) {
+          lastWord++; // Move past the space
+        } else {
+          lastWord = suggestion;
+        }
+
+        // Extract current word
+        char currentWord[1024] = "";
+        strncpy(currentWord, buffer + word_start, position - word_start);
+        currentWord[position - word_start] = '\0';
+
+        // Replace the current word with the suggestion
+        memmove(buffer + word_start, lastWord, strlen(lastWord) + 1);
+        position = word_start + strlen(lastWord);
+
+        // Clear the line
+        GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
+        SetConsoleCursorPosition(hConsole, promptEndPos);
+
+        // Clear the entire line
+        for (int i = 0; i < console_width; i++) {
+          putchar(' ');
+        }
+
+        // Move back to beginning of line and display buffer
+        SetConsoleCursorPosition(hConsole, promptEndPos);
+        printf("%s", buffer);
+
+        // Free suggestion
+        free(suggestion);
+        suggestion = NULL;
+        showing_suggestion = 0;
+
+        continue;
+      }
+
+      // Original tab completion code for files/directories
       // Find the start of the current word
       int word_start = position;
       while (word_start > 0 && buffer[word_start - 1] != ' ' &&
@@ -707,6 +883,9 @@ char *lsh_read_line(void) {
         tab_matches = find_context_matches(buffer, position, partial_path,
                                            &tab_num_matches);
 
+        // If no matches, don't try frequency-based matches as these are handled
+        // by Shift+Enter now
+
         // If no matches, don't do anything
         if (!tab_matches || tab_num_matches == 0) {
           if (tab_matches) {
@@ -737,8 +916,6 @@ char *lsh_read_line(void) {
       if (history_navigation_index >= 0) {
         history_navigation_index = -1;
       }
-
-      continue;
     } else if (isprint(c)) {
       // Regular printable character
       if (position == strlen(buffer)) {

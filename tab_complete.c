@@ -8,7 +8,8 @@
 #include "bookmarks.h"
 #include "builtins.h" // Added to access builtin_str[]
 #include "favorite_cities.h"
-#include "filters.h"         // Added for filter commands
+#include "filters.h" // Added for filter commands
+#include "persistent_history.h"
 #include "structured_data.h" // Added for table header information
 
 // Define field types as constants
@@ -1498,6 +1499,7 @@ char *find_best_match(const char *partial_text) {
 
 /**
  * Find context-aware best match for current input using the command registry
+ * with frequency-based suggestions prioritized
  */
 char *find_context_best_match(const char *buffer, int position) {
   // If empty buffer, nothing to suggest
@@ -1528,6 +1530,35 @@ char *find_context_best_match(const char *buffer, int position) {
     is_argument = 1;
   }
 
+  // Check if we're in "goto" or "unbookmark" command
+  int is_bookmark_cmd = 0;
+  if (strcasecmp(cmd, "goto") == 0 || strcasecmp(cmd, "unbookmark") == 0) {
+    is_bookmark_cmd = 1;
+  }
+
+  // For bookmark commands, use the original bookmark completion
+  if (is_bookmark_cmd) {
+    return find_best_match(buffer);
+  }
+
+  // First try frequency-based suggestions if the command isn't too complex
+  // Look for pipe symbols which indicate complex command pipelines
+  int has_pipe = 0;
+  for (int i = 0; i < position; i++) {
+    if (buffer[i] == '|') {
+      has_pipe = 1;
+      break;
+    }
+  }
+
+  // If it's a simple command (no pipe), prioritize frequency-based suggestions
+  if (!has_pipe) {
+    char *freq_suggestion = find_best_frequency_match(buffer);
+    if (freq_suggestion) {
+      return freq_suggestion;
+    }
+  }
+
   // Find the start of the current word
   int word_start = position - 1;
   while (word_start >= 0 && !isspace(buffer[word_start]) &&
@@ -1536,10 +1567,10 @@ char *find_context_best_match(const char *buffer, int position) {
   }
   word_start++; // Move past the space, backslash, or pipe
 
-  // Extract the current partial word
-  char partial_word[1024] = "";
-  strncpy(partial_word, buffer + word_start, position - word_start);
-  partial_word[position - word_start] = '\0';
+  // Extract just the last word from what we've typed so far
+  char currentWord[1024] = "";
+  strncpy(currentWord, buffer + word_start, position - word_start);
+  currentWord[position - word_start] = '\0';
 
   // If we're in argument mode, handle differently based on command
   if (is_argument) {
@@ -1556,8 +1587,8 @@ char *find_context_best_match(const char *buffer, int position) {
       if (bookmark_names && bookmark_count > 0) {
         // Find the best matching bookmark
         for (int i = 0; i < bookmark_count; i++) {
-          if (_strnicmp(bookmark_names[i], partial_word,
-                        strlen(partial_word)) == 0) {
+          if (_strnicmp(bookmark_names[i], currentWord, strlen(currentWord)) ==
+              0) {
             // Create full suggestion with command and matched bookmark
             best_match =
                 (char *)malloc(strlen(buffer) + strlen(bookmark_names[i]) + 1);
@@ -1593,11 +1624,11 @@ char *find_context_best_match(const char *buffer, int position) {
       char search_dir[1024] = "";
       char search_pattern[256] = "";
 
-      char *last_slash = strrchr(partial_word, '\\');
+      char *last_slash = strrchr(currentWord, '\\');
       if (last_slash) {
         // There's a directory part
-        int dir_len = last_slash - partial_word + 1;
-        strncpy(search_dir, partial_word, dir_len);
+        int dir_len = last_slash - currentWord + 1;
+        strncpy(search_dir, currentWord, dir_len);
         search_dir[dir_len] = '\0';
         strcpy(search_pattern, last_slash + 1);
       } else {
@@ -1606,7 +1637,7 @@ char *find_context_best_match(const char *buffer, int position) {
         _getcwd(cwd, sizeof(cwd));
         strcpy(search_dir, cwd);
         strcat(search_dir, "\\");
-        strcpy(search_pattern, partial_word);
+        strcpy(search_pattern, currentWord);
       }
 
       // Prepare search path
@@ -1657,10 +1688,10 @@ char *find_context_best_match(const char *buffer, int position) {
       char search_dir[1024] = "";
       char search_pattern[256] = "";
 
-      char *last_slash = strrchr(partial_word, '\\');
+      char *last_slash = strrchr(currentWord, '\\');
       if (last_slash) {
-        int dir_len = last_slash - partial_word + 1;
-        strncpy(search_dir, partial_word, dir_len);
+        int dir_len = last_slash - currentWord + 1;
+        strncpy(search_dir, currentWord, dir_len);
         search_dir[dir_len] = '\0';
         strcpy(search_pattern, last_slash + 1);
       } else {
@@ -1668,7 +1699,7 @@ char *find_context_best_match(const char *buffer, int position) {
         _getcwd(cwd, sizeof(cwd));
         strcpy(search_dir, cwd);
         strcat(search_dir, "\\");
-        strcpy(search_pattern, partial_word);
+        strcpy(search_pattern, currentWord);
       }
 
       strcpy(search_path, search_dir);
@@ -1714,7 +1745,7 @@ char *find_context_best_match(const char *buffer, int position) {
       if (alias_names && alias_count > 0) {
         // Find the best matching alias
         for (int i = 0; i < alias_count; i++) {
-          if (_strnicmp(alias_names[i], partial_word, strlen(partial_word)) ==
+          if (_strnicmp(alias_names[i], currentWord, strlen(currentWord)) ==
               0) {
             // Create full suggestion
             best_match =
@@ -1753,7 +1784,6 @@ char *find_context_best_match(const char *buffer, int position) {
   // fall back to the original match finding logic
   return find_best_match(buffer);
 }
-
 /**
  * Prepare an entire screen line in a buffer before displaying
  */
@@ -1859,12 +1889,10 @@ void redraw_tab_suggestion(HANDLE hConsole, COORD promptEndPos,
   SetConsoleCursorInfo(hConsole, &cursorInfo);
 }
 
-/**
- * Display suggestion in one operation to prevent visible "typing"
- */
 void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
                                    const char *buffer, const char *suggestion,
-                                   int position, WORD originalAttributes) {
+                                   int position, WORD originalAttributes,
+                                   int is_history_suggestion) {
   if (!suggestion)
     return;
 
@@ -1906,8 +1934,11 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
   if (is_bookmark_cmd) {
     // For bookmark commands, the suggestion is the full bookmark name
     completionText = suggestion;
+  } else if (is_history_suggestion) {
+    // For history suggestions, use the full suggestion
+    completionText = suggestion;
   } else {
-    // For other cases, extract the last word from the suggestion
+    // For command/file suggestions, extract the last word
     const char *lastWord = strrchr(suggestion, ' ');
     if (lastWord) {
       lastWord++; // Move past the space
@@ -1918,13 +1949,14 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
   }
 
   // Only display if suggestion starts with what we're typing (case insensitive)
-  if (_strnicmp(completionText, currentWord, strlen(currentWord)) != 0) {
+  if (_strnicmp(completionText, buffer, strlen(buffer)) != 0 &&
+      !is_history_suggestion) {
     return;
   }
 
   // Get current cursor position
-  CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
-  GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  GetConsoleScreenBufferInfo(hConsole, &csbi);
 
   // Hide cursor during display
   CONSOLE_CURSOR_INFO cursorInfo;
@@ -1935,10 +1967,21 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
 
   // Prepare the suggestion text (only the part not yet typed)
   char suggestionText[1024] = "";
-  strcpy(suggestionText, completionText + strlen(currentWord));
 
-  // Set text color to gray for suggestion
-  SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
+  // For history suggestions, show the full completion
+  if (is_history_suggestion) {
+    // Skip what the user already typed
+    strcpy(suggestionText, completionText + strlen(buffer));
+
+    // Set text color for history suggestions - use dim cyan for distinction
+    SetConsoleTextAttribute(hConsole, FOREGROUND_BLUE | FOREGROUND_GREEN);
+  } else {
+    // For regular suggestions
+    strcpy(suggestionText, completionText + strlen(currentWord));
+
+    // Set text color to gray for normal suggestions
+    SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
+  }
 
   // Write the suggestion in one operation
   DWORD numCharsWritten;
@@ -1949,7 +1992,7 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
   SetConsoleTextAttribute(hConsole, originalAttributes);
 
   // Reset cursor position
-  SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
+  SetConsoleCursorPosition(hConsole, csbi.dwCursorPosition);
   // Restore cursor visibility
   cursorInfo.bVisible = originalCursorVisible;
   SetConsoleCursorInfo(hConsole, &cursorInfo);

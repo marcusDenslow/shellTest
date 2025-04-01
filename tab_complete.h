@@ -162,8 +162,10 @@ void redraw_tab_suggestion(HANDLE hConsole, COORD promptEndPos,
  * @param position Current cursor position in buffer
  * @param originalAttributes Original console text attributes
  */
+
 void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
                                    const char *buffer, const char *suggestion,
-                                   int position, WORD originalAttributes);
+                                   int position, WORD originalAttributes,
+                                   int is_history_suggestion);
 
 #endif // TAB_COMPLETE_H
