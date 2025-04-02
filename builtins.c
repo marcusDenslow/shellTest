@@ -65,30 +65,61 @@ int history_count = 0; // Total number of commands entered
 int history_index = 0; // Current index in the circular buffer
 
 char *builtin_str[] = {
-    "cd",       "help",      "exit",    "ls",         "dir",         "clear",
-    "cls",      "mkdir",     "rmdir",   "del",        "rm",          "touch",
-    "pwd",      "cat",       "history", "copy",       "cp",          "paste",
-    "move",     "mv",        "ps",      "news",       "focus-timer", "timer",
+    "cd",       "help",      "exit",        "ls",
+    "dir",      "clear",     "cls",         "mkdir",
+    "rmdir",    "del",       "rm",          "touch",
+    "pwd",      "cat",       "history",     "copy",
+    "cp",       "paste",     "move",        "mv",
+    "ps",       "news",      "focus-timer", "timer",
     "alias",   // Added for alias support
     "unalias", // Added for alias support
     "aliases", // New command to list all aliases
-    "bookmark", "bookmarks", "goto",    "unbookmark", "weather",     "grep",
-    "cities",   "fzf",       "ripgrep", "clip",
+    "bookmark", "bookmarks", "goto",        "unbookmark",
+    "weather",  "grep",      "cities",      "fzf",
+    "ripgrep",  "clip",      "echo",        "self-destruct",
 };
 
 // Add to the builtin_func array:
 int (*builtin_func[])(char **) = {
-    &lsh_cd,         &lsh_help,     &lsh_exit,        &lsh_dir,
-    &lsh_dir,        &lsh_clear,    &lsh_clear,       &lsh_mkdir,
-    &lsh_rmdir,      &lsh_del,      &lsh_del,         &lsh_touch,
-    &lsh_pwd,        &lsh_cat,      &lsh_history,     &lsh_copy,
-    &lsh_copy,       &lsh_paste,    &lsh_move,        &lsh_move,
-    &lsh_ps,         &lsh_news,     &lsh_focus_timer, &lsh_focus_timer,
+    &lsh_cd,
+    &lsh_help,
+    &lsh_exit,
+    &lsh_dir,
+    &lsh_dir,
+    &lsh_clear,
+    &lsh_clear,
+    &lsh_mkdir,
+    &lsh_rmdir,
+    &lsh_del,
+    &lsh_del,
+    &lsh_touch,
+    &lsh_pwd,
+    &lsh_cat,
+    &lsh_history,
+    &lsh_copy,
+    &lsh_copy,
+    &lsh_paste,
+    &lsh_move,
+    &lsh_move,
+    &lsh_ps,
+    &lsh_news,
+    &lsh_focus_timer,
+    &lsh_focus_timer,
     &lsh_alias,   // Added for alias support
     &lsh_unalias, // Added for alias support
-    &lsh_aliases,    &lsh_bookmark, &lsh_bookmarks,   &lsh_goto,
-    &lsh_unbookmark, &lsh_weather,  &lsh_grep,        &lsh_cities,
-    &lsh_fzf_native, &lsh_ripgrep,  &lsh_clip,
+    &lsh_aliases,
+    &lsh_bookmark,
+    &lsh_bookmarks,
+    &lsh_goto,
+    &lsh_unbookmark,
+    &lsh_weather,
+    &lsh_grep,
+    &lsh_cities,
+    &lsh_fzf_native,
+    &lsh_ripgrep,
+    &lsh_clip,
+    &lsh_echo,
+    &lsh_self_destruct,
 };
 
 // Return the number of built-in commands
@@ -3464,5 +3495,42 @@ int lsh_clip(char **args) {
   return 1;
 }
 
-// Exit the shell
+int lsh_echo(char **args) {
+  if (args[1] == NULL) {
+    printf("expected argument string type\n");
+    printf("e.g.: echo hello world\n");
+    return 1;
+  }
+
+  if (strcmp(args[1], "cwd") == 0) {
+    char cwd[1024];
+
+    if (_getcwd(cwd, sizeof(cwd)) == NULL) {
+      perror("lsh: unable to get cwd");
+      return 1;
+    }
+    printf("\n%s\n\n", cwd);
+    return 1;
+  }
+
+  int i = 1;
+
+  while (args[i] != NULL) {
+    printf("%s", args[i]);
+
+    if (args[i + 1] != NULL) {
+      printf(" ");
+    }
+    i++;
+  }
+  printf("\n");
+  return 1;
+}
+
+int lsh_self_destruct() {
+  printf("\n");
+  printf("self fucking destructed bro\n");
+  return 1;
+}
+
 int lsh_exit(char **args) { return 0; }
