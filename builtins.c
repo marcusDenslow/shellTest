@@ -10,6 +10,7 @@
 #include "grep.h"
 #include "persistent_history.h"
 #include "structured_data.h"
+#include "themes.h"
 #include <Psapi.h>
 #include <ShlObj.h>
 #include <fileapi.h>
@@ -77,6 +78,7 @@ char *builtin_str[] = {
     "bookmark", "bookmarks", "goto",        "unbookmark",
     "weather",  "grep",      "cities",      "fzf",
     "ripgrep",  "clip",      "echo",        "self-destruct",
+    "theme",
 };
 
 // Add to the builtin_func array:
@@ -120,6 +122,7 @@ int (*builtin_func[])(char **) = {
     &lsh_clip,
     &lsh_echo,
     &lsh_self_destruct,
+    &lsh_theme,
 };
 
 // Return the number of built-in commands
@@ -257,16 +260,44 @@ FileType get_file_type(const char *filename) {
 /**
  * Set console text color
  */
-void set_color(int color) {
+void set_color(int color_role) {
   HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  WORD color;
+
+  // Map syntax roles to theme colors
+  switch (color_role) {
+  case COLOR_KEYWORD:
+    color = current_theme.SYNTAX_KEYWORD;
+    break;
+  case COLOR_STRING:
+    color = current_theme.SYNTAX_STRING;
+    break;
+  case COLOR_COMMENT:
+    color = current_theme.SYNTAX_COMMENT;
+    break;
+  case COLOR_NUMBER:
+    color = current_theme.SYNTAX_NUMBER;
+    break;
+  case COLOR_PREPROCESSOR:
+    color = current_theme.SYNTAX_PREPROCESSOR;
+    break;
+  case COLOR_IDENTIFIER:
+    color = current_theme.SECONDARY_COLOR;
+    break;
+  default:
+    color = current_theme.PRIMARY_COLOR;
+    break;
+  }
+
   SetConsoleTextAttribute(hConsole, color);
 }
-
 /**
  * Reset console text color to default
  */
-void reset_color() { set_color(COLOR_DEFAULT); }
-
+void reset_color() {
+  HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+}
 /**
  * Check if a character is a word boundary character
  */
@@ -536,7 +567,6 @@ void print_c_file_highlighted(FILE *file) {
 
   reset_color();
 }
-
 /**
  * Print Python file with syntax highlighting
  */
@@ -771,7 +801,6 @@ void print_py_file_highlighted(FILE *file) {
 
   reset_color();
 }
-
 /**
  * Print HTML/XML file with syntax highlighting
  */
@@ -865,7 +894,6 @@ void print_html_file_highlighted(FILE *file) {
 
   reset_color();
 }
-
 /**
  * Print C/C++ file with syntax highlighting and line numbers
  */
@@ -1790,8 +1818,8 @@ int lsh_clear(char **args) {
 
 // Function to determine color based on file extension
 WORD get_file_color(const char *filename) {
-  // Default file color (BLUE)
-  WORD color = FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+  // Default file color from theme
+  WORD color = current_theme.TEXT_FILE_COLOR;
 
   // Find the file extension
   char *dot = strrchr(filename, '.');
@@ -1802,98 +1830,57 @@ WORD get_file_color(const char *filename) {
   // Move past the dot
   char *ext = dot + 1;
 
-  // C/C++ source files - blue
+  // C/C++ source files
   if (stricmp(ext, "c") == 0 || stricmp(ext, "cpp") == 0 ||
       stricmp(ext, "cc") == 0) {
-    return FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    return current_theme.CODE_FILE_COLOR;
   }
 
-  // C/C++ header files - purple/magenta
+  // C/C++ header files
   if (stricmp(ext, "h") == 0 || stricmp(ext, "hpp") == 0) {
-    return FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    return current_theme.CODE_FILE_COLOR;
   }
 
   // Python files
   if (stricmp(ext, "py") == 0 || stricmp(ext, "pyc") == 0 ||
       stricmp(ext, "pyd") == 0 || stricmp(ext, "pyw") == 0) {
-    return FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    return current_theme.CODE_FILE_COLOR;
   }
 
   // JavaScript/TypeScript files
   if (stricmp(ext, "js") == 0 || stricmp(ext, "ts") == 0 ||
       stricmp(ext, "jsx") == 0 || stricmp(ext, "tsx") == 0) {
-    return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    return current_theme.CODE_FILE_COLOR;
   }
 
   // Java files
   if (stricmp(ext, "java") == 0 || stricmp(ext, "class") == 0 ||
       stricmp(ext, "jar") == 0) {
-    return FOREGROUND_RED | FOREGROUND_INTENSITY;
-  }
-
-  // Rust files
-  if (stricmp(ext, "rs") == 0) {
-    return FOREGROUND_RED | FOREGROUND_INTENSITY;
-  }
-
-  // Go files
-  if (stricmp(ext, "go") == 0) {
-    return FOREGROUND_BLUE | FOREGROUND_GREEN;
-  }
-
-  // Ruby files
-  if (stricmp(ext, "rb") == 0) {
-    return FOREGROUND_RED;
-  }
-
-  // PHP files
-  if (stricmp(ext, "php") == 0) {
-    return FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
-  }
-
-  // HTML/CSS/Web files
-  if (stricmp(ext, "html") == 0 || stricmp(ext, "htm") == 0 ||
-      stricmp(ext, "css") == 0 || stricmp(ext, "xml") == 0) {
-    return FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-  }
-
-  // Markdown/Text files
-  if (stricmp(ext, "md") == 0 || stricmp(ext, "txt") == 0 ||
-      stricmp(ext, "markdown") == 0) {
-    return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
-  }
-
-  // Shell scripts
-  if (stricmp(ext, "sh") == 0 || stricmp(ext, "bash") == 0 ||
-      stricmp(ext, "zsh") == 0 || stricmp(ext, "bat") == 0 ||
-      stricmp(ext, "cmd") == 0) {
-    return FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    return current_theme.CODE_FILE_COLOR;
   }
 
   // Executable files
   if (stricmp(ext, "exe") == 0 || stricmp(ext, "dll") == 0 ||
       stricmp(ext, "sys") == 0) {
-    return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    return current_theme.EXECUTABLE_COLOR;
   }
 
   // Images
   if (stricmp(ext, "jpg") == 0 || stricmp(ext, "jpeg") == 0 ||
       stricmp(ext, "png") == 0 || stricmp(ext, "gif") == 0 ||
       stricmp(ext, "bmp") == 0) {
-    return FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    return current_theme.IMAGE_FILE_COLOR;
   }
 
-  // Data files
-  if (stricmp(ext, "json") == 0 || stricmp(ext, "csv") == 0 ||
-      stricmp(ext, "yaml") == 0 || stricmp(ext, "yml") == 0 ||
-      stricmp(ext, "xml") == 0 || stricmp(ext, "toml") == 0) {
-    return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE |
-           FOREGROUND_INTENSITY;
+  // Archives
+  if (stricmp(ext, "zip") == 0 || stricmp(ext, "rar") == 0 ||
+      stricmp(ext, "7z") == 0 || stricmp(ext, "gz") == 0 ||
+      stricmp(ext, "tar") == 0) {
+    return current_theme.ARCHIVE_FILE_COLOR;
   }
 
-  return color; // Default color
+  return color; // Default color for other file types
 }
-
 int lsh_dir(char **args) {
   char cwd[1024];
   WIN32_FIND_DATA findData;
@@ -2091,6 +2078,14 @@ int lsh_dir(char **args) {
     tableWidth = infoBoxWidth;
   }
 
+  // Save original console attributes to restore later
+  WORD originalAttributes;
+  GetConsoleScreenBufferInfo(hConsole, &csbi);
+  originalAttributes = csbi.wAttributes;
+
+  // Use theme header color for info box
+  SetConsoleTextAttribute(hConsole, current_theme.HEADER_COLOR);
+
   // Print directory info box with proper width
   printf("\n\u250C");
   for (int i = 0; i < infoBoxWidth - 2; i++)
@@ -2135,6 +2130,9 @@ int lsh_dir(char **args) {
           nameColWidth - 2, sizeColWidth - 2, typeColWidth - 2,
           modifiedColWidth - 2);
 
+  // Use theme header color for table header
+  SetConsoleTextAttribute(hConsole, current_theme.HEADER_COLOR);
+
   // Print table header
   printf("\u250C");
   for (int i = 0; i < nameColWidth; i++)
@@ -2169,6 +2167,9 @@ int lsh_dir(char **args) {
     printf("\u2500");
   printf("\u2524\n");
 
+  // Reset to default color
+  SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+
   // Print data rows with colored fields and new column order
   for (int i = 0; i < fileInfoIndex; i++) {
     // Start the row
@@ -2176,19 +2177,20 @@ int lsh_dir(char **args) {
 
     // Print filename with color based on extension or directory status
     if (fileInfoArray[i].isDirectory) {
-      set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+      SetConsoleTextAttribute(hConsole, current_theme.DIRECTORY_COLOR);
     } else {
       // Use extension-based coloring for files
-      set_color(get_file_color(fileInfoArray[i].fileName));
+      SetConsoleTextAttribute(hConsole,
+                              get_file_color(fileInfoArray[i].fileName));
     }
     printf("%-*s", nameColWidth - 2, fileInfoArray[i].fileName);
-    reset_color();
+    SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
 
-    // Print size in red
+    // Print size in theme accent color
     printf(" \u2502 ");
-    set_color(FOREGROUND_RED | FOREGROUND_INTENSITY);
+    SetConsoleTextAttribute(hConsole, current_theme.ACCENT_COLOR);
     printf("%-*s", sizeColWidth - 2, fileInfoArray[i].sizeString);
-    reset_color();
+    SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
 
     // Print type (default color)
     printf(" \u2502 %-*s \u2502 ", typeColWidth - 2, fileInfoArray[i].fileType);
@@ -2197,7 +2199,8 @@ int lsh_dir(char **args) {
     printf("%-*s \u2502\n", modifiedColWidth - 2, fileInfoArray[i].timeString);
   }
 
-  // Bottom border
+  // Bottom border with theme header color
+  SetConsoleTextAttribute(hConsole, current_theme.HEADER_COLOR);
   printf("\u2514");
   for (int i = 0; i < nameColWidth; i++)
     printf("\u2500");
@@ -2214,10 +2217,12 @@ int lsh_dir(char **args) {
 
   printf("\n");
 
+  // Restore original console attributes
+  SetConsoleTextAttribute(hConsole, originalAttributes);
+
   free(fileInfoArray);
   return 1;
 }
-
 static char *copied_file_path = NULL;
 static char *copied_file_name = NULL;
 
@@ -2564,19 +2569,56 @@ int lsh_move(char **args) {
 
 // Display help
 int lsh_help(char **args) {
-  int i;
-  printf("Marcus Denslow's LSH\n");
-  printf("Type program names and arguments, and hit enter.\n");
-  printf("The following are built in:\n");
+  HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  WORD originalAttrs;
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
 
-  for (i = 0; i < lsh_num_builtins(); i++) {
-    printf("  %s\n", builtin_str[i]);
+  // Get original attributes
+  if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+    originalAttrs = csbi.wAttributes;
+  } else {
+    originalAttrs = current_theme.PRIMARY_COLOR;
   }
 
+  // Use header color for title
+  SetConsoleTextAttribute(hConsole, current_theme.HEADER_COLOR);
+  printf("\nMarcus Denslow's LSH\n");
+  SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+
+  printf("Type program names and arguments, and hit enter.\n\n");
+
+  // Use accent color for section title
+  SetConsoleTextAttribute(hConsole, current_theme.ACCENT_COLOR);
+  printf("Built-in commands:\n");
+  SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+
+  // Print commands in a nice colored grid
+  int columns = 4; // Number of columns to display
+  int i = 0;
+
+  while (i < lsh_num_builtins()) {
+    // Start a new row
+    printf("  ");
+
+    // Print up to 'columns' commands per row
+    for (int col = 0; col < columns && i < lsh_num_builtins(); col++, i++) {
+      // Use secondary color for command names
+      SetConsoleTextAttribute(hConsole, current_theme.SECONDARY_COLOR);
+      printf("%-15s", builtin_str[i]);
+      SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+    }
+    printf("\n");
+  }
+
+  printf("\n");
   printf("Use the command for information on other programs.\n");
+  printf("Type 'theme list' to view available themes.\n\n");
+
+  // Restore original attributes
+  SetConsoleTextAttribute(hConsole, originalAttrs);
+
   return 1;
 }
-
 /**
  * Create structured output for ls/dir command
  */
@@ -2828,9 +2870,10 @@ int lsh_news(char **args) {
 
   // Get handle to console for output
   HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-  WORD boxColor = FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-  WORD textColor = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE |
-                   FOREGROUND_INTENSITY;
+
+  // Use theme colors for UI elements
+  WORD boxColor = current_theme.ACCENT_COLOR;
+  WORD textColor = current_theme.PRIMARY_COLOR;
   WORD originalAttrs;
 
   // Get original console attributes
@@ -3165,7 +3208,7 @@ cleanup:
         line_count++;
     }
 
-    // Use bright green for the borders and header
+    // Use theme accent color for the borders and header
     SetConsoleTextAttribute(hConsole, boxColor);
 
     // Top border with centering
@@ -3193,7 +3236,7 @@ cleanup:
     }
     printf("\u2524\n"); // Right T-junction
 
-    // Content lines - use white (bright) text for content
+    // Content lines - use primary color for content text
     char *line_start = news_buffer;
     char *line_end;
 
@@ -3203,11 +3246,11 @@ cleanup:
       // Add left padding for centering
       printf("%*s", leftPadding, "");
 
-      // Print left border in green
+      // Print left border in accent color
       SetConsoleTextAttribute(hConsole, boxColor);
       printf("\u2502");
 
-      // Print content in white with precise padding
+      // Print content in theme primary color
       SetConsoleTextAttribute(hConsole, textColor);
 
       // Create a padded line with exact width
@@ -3218,7 +3261,7 @@ cleanup:
       // Print exactly BOX_WIDTH characters
       printf("%.*s", BOX_WIDTH, paddedLine);
 
-      // Print right border in green
+      // Print right border in accent color
       SetConsoleTextAttribute(hConsole, boxColor);
       printf("\u2502\n");
 
@@ -3226,7 +3269,7 @@ cleanup:
       line_start = line_end + 1; // Move to the start of the next line
     }
 
-    // Bottom border in green
+    // Bottom border in accent color
     printf("%*s", leftPadding, ""); // Add left padding
     SetConsoleTextAttribute(hConsole, boxColor);
     printf("\u2514"); // Bottom-left corner
@@ -3263,9 +3306,8 @@ cleanup:
     if (leftPadding < 0)
       leftPadding = 0;
 
-    // Use bright yellow for error message borders
-    SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN |
-                                          FOREGROUND_INTENSITY);
+    // Use warning color for error message borders
+    SetConsoleTextAttribute(hConsole, current_theme.WARNING_COLOR);
 
     // Top border with centering
     printf("%*s", leftPadding, "");
@@ -3309,15 +3351,12 @@ cleanup:
       printf("%*s", leftPadding, "");
       printf("\u2502");
 
-      // Print message text in white
-      SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN |
-                                            FOREGROUND_BLUE |
-                                            FOREGROUND_INTENSITY);
+      // Print message text in primary color
+      SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
       printf(" %-*s ", BOX_WIDTH - 2, messages[i]);
 
-      // Return to yellow for the border
-      SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN |
-                                            FOREGROUND_INTENSITY);
+      // Return to warning color for the border
+      SetConsoleTextAttribute(hConsole, current_theme.WARNING_COLOR);
       printf("\u2502\n");
     }
 
@@ -3335,7 +3374,6 @@ cleanup:
 
   return 1;
 }
-
 /**
  * Extract a string value from a JSON object
  */

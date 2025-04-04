@@ -6,6 +6,7 @@
 #include "countdown_timer.h"
 #include "common.h"
 #include "shell.h"
+#include "themes.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -278,42 +279,6 @@ static void update_timer_display_text() {
 }
 
 /**
- * Update the status bar with minimal cursor disturbance
- * This is a simpler version of the main update_status_bar function
- * that only updates the timer portion
- */
-static void update_status_bar_minimal(HANDLE hConsole) {
-  if (!timer_state.is_active || timer_state.is_temporarily_hidden) {
-    return;
-  }
-
-  // Get current console information
-  CONSOLE_SCREEN_BUFFER_INFO csbi;
-  if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
-    return; // Can't proceed without console info
-  }
-
-  // Get console width
-  int console_width = csbi.dwSize.X;
-
-  // Only update the timer portion on the right side
-  int timer_info_len = strlen(timer_state.display_text);
-  COORD timerPos = {console_width - timer_info_len - 2, csbi.srWindow.Bottom};
-
-  // Set text color for timer info (cyan)
-  WORD timerInfoColor = FOREGROUND_RED | FOREGROUND_INTENSITY;
-
-  // Write the timer text
-  DWORD charsWritten;
-  WriteConsoleOutputCharacter(hConsole, timer_state.display_text,
-                              timer_info_len, timerPos, &charsWritten);
-
-  // Set attributes for the timer text
-  FillConsoleOutputAttribute(hConsole, timerInfoColor, timer_info_len, timerPos,
-                             &charsWritten);
-}
-
-/**
  * Show notification when timer completes
  * Completely revised with robust direct input handling for ESC key
  */
@@ -336,7 +301,7 @@ static void show_timer_notification() {
   if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
     originalAttributes = csbi.wAttributes;
   } else {
-    originalAttributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
+    originalAttributes = current_theme.PRIMARY_COLOR;
   }
 
   // Make a sound
@@ -348,11 +313,10 @@ static void show_timer_notification() {
   GetConsoleScreenBufferInfo(hConsole, &csbi);
   COORD savedPosition = csbi.dwCursorPosition;
 
-  // Create a notification box
-  SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN |
-                                        FOREGROUND_INTENSITY);
+  // Use theme success color for notification
+  SetConsoleTextAttribute(hConsole, current_theme.SUCCESS_COLOR);
 
-  // Position the notification at the center of the console
+  // Create a notification box
   int boxWidth = 50;
   int left = (csbi.dwSize.X - boxWidth) / 2;
   int top = csbi.dwCursorPosition.Y - 5;
@@ -384,8 +348,9 @@ static void show_timer_notification() {
   SetConsoleCursorPosition(hConsole, (COORD){left, top + 6});
   printf("╚═══════════════════════════════════════════════╝\n");
 
-  // Add key instruction - now includes Q as a backup
+  // Add key instruction - use theme secondary color
   SetConsoleCursorPosition(hConsole, (COORD){left + 10, top + 5});
+  SetConsoleTextAttribute(hConsole, current_theme.SECONDARY_COLOR);
   printf("Press q and then Q to close");
 
   // Reset attributes
@@ -446,6 +411,41 @@ static void show_timer_notification() {
   SetConsoleMode(hStdin, oldConsoleMode);
 }
 
+/**
+ * Update the status bar with minimal cursor disturbance
+ * This is a simpler version of the main update_status_bar function
+ * that only updates the timer portion, with theme colors
+ */
+static void update_status_bar_minimal(HANDLE hConsole) {
+  if (!timer_state.is_active || timer_state.is_temporarily_hidden) {
+    return;
+  }
+
+  // Get current console information
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+    return; // Can't proceed without console info
+  }
+
+  // Get console width
+  int console_width = csbi.dwSize.X;
+
+  // Only update the timer portion on the right side
+  int timer_info_len = strlen(timer_state.display_text);
+  COORD timerPos = {console_width - timer_info_len - 2, csbi.srWindow.Bottom};
+
+  // Set text color for timer info using theme warning color
+  WORD timerInfoColor = current_theme.WARNING_COLOR;
+
+  // Write the timer text
+  DWORD charsWritten;
+  WriteConsoleOutputCharacter(hConsole, timer_state.display_text,
+                              timer_info_len, timerPos, &charsWritten);
+
+  // Set attributes for the timer text
+  FillConsoleOutputAttribute(hConsole, timerInfoColor, timer_info_len, timerPos,
+                             &charsWritten);
+}
 /**
  * Parse time units from command arguments
  * Supports formats like: 30m, 1h30m, 45s, 1 hour 30 mins, etc.

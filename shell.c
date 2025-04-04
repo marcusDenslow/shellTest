@@ -16,6 +16,7 @@
 #include "persistent_history.h"
 #include "structured_data.h"
 #include "tab_complete.h" // Added for tab completion support
+#include "themes.h"
 #include <stdio.h>
 #include <time.h> // Added for time functions
 //
@@ -225,9 +226,8 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
     }
     clean_git_info[c_index] = '\0';
 
-    // Set text color for Git info (purple)
-    WORD gitInfoColor = g_status_attributes | FOREGROUND_RED | FOREGROUND_BLUE |
-                        FOREGROUND_INTENSITY;
+    // Set text color for Git info using theme accent color
+    WORD gitInfoColor = g_status_attributes | current_theme.ACCENT_COLOR;
 
     // Calculate positions for both Git info and timer (if needed)
     int git_info_len = strlen(clean_git_info);
@@ -246,9 +246,8 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
       int timer_info_len = strlen(timer_info);
       COORD timerPos = {g_console_width - timer_info_len - 2, g_status_line};
 
-      // Set text color for timer info (cyan)
-      WORD timerInfoColor =
-          g_status_attributes | FOREGROUND_RED | FOREGROUND_INTENSITY;
+      // Set text color for timer info using theme warning color
+      WORD timerInfoColor = g_status_attributes | current_theme.WARNING_COLOR;
 
       WriteConsoleOutputCharacter(hConsole, timer_info, timer_info_len,
                                   timerPos, &charsWritten);
@@ -274,9 +273,8 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
       int timer_info_len = strlen(timer_info);
       COORD timerPos = {g_console_width - timer_info_len - 2, g_status_line};
 
-      // Set text color for timer info (cyan)
-      WORD timerInfoColor =
-          g_status_attributes | FOREGROUND_RED | FOREGROUND_INTENSITY;
+      // Set text color for timer info using theme warning color
+      WORD timerInfoColor = g_status_attributes | current_theme.WARNING_COLOR;
 
       WriteConsoleOutputCharacter(hConsole, timer_info, timer_info_len,
                                   timerPos, &charsWritten);
@@ -284,15 +282,23 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
       FillConsoleOutputAttribute(hConsole, timerInfoColor, timer_info_len,
                                  timerPos, &charsWritten);
 
-      // Also show default message on left
+      // Also show default message on left with theme secondary color
       const char *defaultMsg = " Shell Status";
+      WORD defaultMsgColor =
+          g_status_attributes | current_theme.SECONDARY_COLOR;
       WriteConsoleOutputCharacter(hConsole, defaultMsg, strlen(defaultMsg),
                                   statusPos, &charsWritten);
+      FillConsoleOutputAttribute(hConsole, defaultMsgColor, strlen(defaultMsg),
+                                 statusPos, &charsWritten);
     } else {
       // Default message when no Git info or timer is available
       const char *defaultMsg = " Shell Status";
+      WORD defaultMsgColor =
+          g_status_attributes | current_theme.SECONDARY_COLOR;
       WriteConsoleOutputCharacter(hConsole, defaultMsg, strlen(defaultMsg),
                                   statusPos, &charsWritten);
+      FillConsoleOutputAttribute(hConsole, defaultMsgColor, strlen(defaultMsg),
+                                 statusPos, &charsWritten);
     }
   }
 
@@ -303,7 +309,6 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
   cursorInfo.bVisible = originalCursorVisible;
   SetConsoleCursorInfo(hConsole, &cursorInfo);
 }
-
 /**
  * Initialize the status bar at the bottom of the screen
  */
@@ -315,10 +320,10 @@ int init_status_bar(HANDLE hConsole) {
   }
 
   // Save normal attributes for later
-  g_normal_attributes = csbi.wAttributes;
+  g_normal_attributes = current_theme.PRIMARY_COLOR;
 
-  // Set status bar attributes (true black background)
-  g_status_attributes = 0; // Pure black background (no intensity)
+  // Set status bar attributes using theme colors
+  g_status_attributes = current_theme.STATUS_BAR_COLOR;
 
   // Get console dimensions
   g_console_width = csbi.dwSize.X;
@@ -339,7 +344,7 @@ int init_status_bar(HANDLE hConsole) {
     putchar(' ');
   }
 
-  // Reset text attributes
+  // Reset text attributes to theme primary color
   SetConsoleTextAttribute(hConsole, g_normal_attributes);
 
   // Restore cursor position
@@ -350,7 +355,6 @@ int init_status_bar(HANDLE hConsole) {
 
   return 1;
 }
-
 /**
  * Add padding above the status bar to avoid a cramped UI
  * This ensures there are at least two blank lines between output and prompt
@@ -748,15 +752,6 @@ void lsh_loop(void) {
   static char cached_git_info[128] = "";
   static int cached_in_git_repo = 0;
 
-  // ANSI color codes for styling
-  const char *CYAN = "\033[36m";
-  const char *GREEN = "\033[32m";
-  const char *YELLOW = "\033[33m";
-  const char *BLUE = "\033[34m";
-  const char *PURPLE = "\033[35m";
-  const char *BRIGHT_PURPLE = "\033[95m";
-  const char *RESET = "\033[0m";
-
   // Get handle to console
   HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
 
@@ -768,6 +763,10 @@ void lsh_loop(void) {
 
   // Initialize favorite cities
   init_favorite_cities();
+
+  // Initialize theme system
+  init_theme_system();
+  apply_current_theme();
 
   // Initialize persistent history
   init_persistent_history();
@@ -813,21 +812,28 @@ void lsh_loop(void) {
       char current_dir[256] = "";
       get_path_display(cwd, parent_dir, current_dir, sizeof(parent_dir));
 
-      // Format prompt with username, parent and current directory
-      if (parent_dir[0] != '\0') {
-        snprintf(prompt_path, sizeof(prompt_path), "%s%s%s in %s%s\\%s%s", CYAN,
-                 username, RESET, BLUE, parent_dir, current_dir, RESET);
-      } else {
-        // If we don't have a parent directory, just show the current
-        snprintf(prompt_path, sizeof(prompt_path), "%s%s%s in %s%s%s", CYAN,
-                 username, RESET, BLUE, current_dir, RESET);
-      }
-
       // Ensure we still have room for status bar after prompt
       ensure_status_bar_space(hConsole);
 
-      // Print prompt
-      printf("%s -> ", prompt_path);
+      // Use different colors for different parts of the prompt
+      SetConsoleTextAttribute(hConsole, current_theme.PROMPT_COLOR);
+      printf("%s", username);
+
+      SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+      printf(" in ");
+
+      SetConsoleTextAttribute(hConsole, current_theme.DIRECTORY_COLOR);
+      if (parent_dir[0] != '\0') {
+        printf("%s\\%s", parent_dir, current_dir);
+      } else {
+        printf("%s", current_dir);
+      }
+
+      SetConsoleTextAttribute(hConsole, current_theme.PROMPT_COLOR);
+      printf(" -> ");
+
+      // Reset to primary color for user input
+      SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
       fflush(stdout);
 
       // Update the status bar initially without Git info
@@ -910,9 +916,6 @@ void lsh_loop(void) {
 
       // Now add the fully constructed command to history
       lsh_add_to_history(final_command);
-
-      // Debug print frequencies (uncomment this line to see current
-      // frequencies) debug_print_frequencies();
     }
 
     // Hide status bar before command execution to prevent ghost duplicates
@@ -942,5 +945,5 @@ void lsh_loop(void) {
   cleanup_aliases();
   cleanup_bookmarks();
   cleanup_favorite_cities();
-  cleanup_persistent_history(); // Added cleanup for persistent history
+  cleanup_persistent_history();
 }
