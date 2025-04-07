@@ -199,107 +199,35 @@ void update_status_bar(HANDLE hConsole, const char *git_info) {
   const char *timer_info = get_timer_display();
   BOOL has_timer = is_timer_active() && timer_info && timer_info[0];
 
-  // If we have Git info to display
-  if (git_info && git_info[0]) {
-    // Prepare clean git info (strip ANSI color codes if any)
-    char clean_git_info[256] = "";
-    int c_index = 0;
-    int in_ansi = 0;
+  if (has_timer) {
+    // Display timer info on the right
+    int timer_info_len = strlen(timer_info);
+    COORD timerPos = {g_console_width - timer_info_len - 2, g_status_line};
 
-    for (const char *p = git_info; *p; p++) {
-      if (*p == '\033') {
-        in_ansi = 1;
-        continue;
-      }
+    // Set text color for timer info using theme warning color
+    WORD timerInfoColor = g_status_attributes | current_theme.WARNING_COLOR;
 
-      if (in_ansi) {
-        if (*p == 'm') {
-          in_ansi = 0;
-        }
-        continue;
-      }
+    WriteConsoleOutputCharacter(hConsole, timer_info, timer_info_len, timerPos,
+                                &charsWritten);
 
-      // Not in ANSI sequence, copy character
-      if (c_index < sizeof(clean_git_info) - 1) {
-        clean_git_info[c_index++] = *p;
-      }
-    }
-    clean_git_info[c_index] = '\0';
+    FillConsoleOutputAttribute(hConsole, timerInfoColor, timer_info_len,
+                               timerPos, &charsWritten);
 
-    // Set text color for Git info using theme accent color
-    WORD gitInfoColor = g_status_attributes | current_theme.ACCENT_COLOR;
-
-    // Calculate positions for both Git info and timer (if needed)
-    int git_info_len = strlen(clean_git_info);
-
-    if (has_timer) {
-      // Display Git info on the left
-      WriteConsoleOutputCharacter(hConsole, clean_git_info, git_info_len,
-                                  statusPos, &charsWritten);
-
-      // Set the attributes for the written characters
-      COORD attrPos = statusPos;
-      FillConsoleOutputAttribute(hConsole, gitInfoColor, git_info_len, attrPos,
-                                 &charsWritten);
-
-      // Display timer info on the right
-      int timer_info_len = strlen(timer_info);
-      COORD timerPos = {g_console_width - timer_info_len - 2, g_status_line};
-
-      // Set text color for timer info using theme warning color
-      WORD timerInfoColor = g_status_attributes | current_theme.WARNING_COLOR;
-
-      WriteConsoleOutputCharacter(hConsole, timer_info, timer_info_len,
-                                  timerPos, &charsWritten);
-
-      FillConsoleOutputAttribute(hConsole, timerInfoColor, timer_info_len,
-                                 timerPos, &charsWritten);
-    } else {
-      // No timer, just display Git info
-      WriteConsoleOutputCharacter(hConsole, clean_git_info,
-                                  strlen(clean_git_info), statusPos,
-                                  &charsWritten);
-
-      // Set the attributes for the written characters
-      DWORD length = strlen(clean_git_info);
-      COORD attrPos = statusPos;
-      FillConsoleOutputAttribute(hConsole, gitInfoColor, length, attrPos,
-                                 &charsWritten);
-    }
+    // Also show default message on left with theme secondary color
+    const char *defaultMsg = " Shell Status";
+    WORD defaultMsgColor = g_status_attributes | current_theme.SECONDARY_COLOR;
+    WriteConsoleOutputCharacter(hConsole, defaultMsg, strlen(defaultMsg),
+                                statusPos, &charsWritten);
+    FillConsoleOutputAttribute(hConsole, defaultMsgColor, strlen(defaultMsg),
+                               statusPos, &charsWritten);
   } else {
-    if (has_timer) {
-      // No Git info but we have a timer
-      // Display timer on the right
-      int timer_info_len = strlen(timer_info);
-      COORD timerPos = {g_console_width - timer_info_len - 2, g_status_line};
-
-      // Set text color for timer info using theme warning color
-      WORD timerInfoColor = g_status_attributes | current_theme.WARNING_COLOR;
-
-      WriteConsoleOutputCharacter(hConsole, timer_info, timer_info_len,
-                                  timerPos, &charsWritten);
-
-      FillConsoleOutputAttribute(hConsole, timerInfoColor, timer_info_len,
-                                 timerPos, &charsWritten);
-
-      // Also show default message on left with theme secondary color
-      const char *defaultMsg = " Shell Status";
-      WORD defaultMsgColor =
-          g_status_attributes | current_theme.SECONDARY_COLOR;
-      WriteConsoleOutputCharacter(hConsole, defaultMsg, strlen(defaultMsg),
-                                  statusPos, &charsWritten);
-      FillConsoleOutputAttribute(hConsole, defaultMsgColor, strlen(defaultMsg),
-                                 statusPos, &charsWritten);
-    } else {
-      // Default message when no Git info or timer is available
-      const char *defaultMsg = " Shell Status";
-      WORD defaultMsgColor =
-          g_status_attributes | current_theme.SECONDARY_COLOR;
-      WriteConsoleOutputCharacter(hConsole, defaultMsg, strlen(defaultMsg),
-                                  statusPos, &charsWritten);
-      FillConsoleOutputAttribute(hConsole, defaultMsgColor, strlen(defaultMsg),
-                                 statusPos, &charsWritten);
-    }
+    // Default message when no timer is available
+    const char *defaultMsg = " Shell Status";
+    WORD defaultMsgColor = g_status_attributes | current_theme.SECONDARY_COLOR;
+    WriteConsoleOutputCharacter(hConsole, defaultMsg, strlen(defaultMsg),
+                                statusPos, &charsWritten);
+    FillConsoleOutputAttribute(hConsole, defaultMsgColor, strlen(defaultMsg),
+                               statusPos, &charsWritten);
   }
 
   // Restore original cursor position
@@ -738,22 +666,41 @@ void get_path_display(const char *cwd, char *parent_dir_name,
 /**
  * Main shell loop (updated with persistent history support)
  */
+
+/**
+ * Main shell loop (updated with persistent history support)
+ */
 void lsh_loop(void) {
   char *line;
   char ***commands;
   int status;
   char cwd[1024];
   char prompt_path[1024];
-  char git_info[128] = "";
-  char username[256] = "Elden Lord";
+  char git_info[128];
+  char username[256];
 
   // Static variables to cache Git information
-  static char last_directory[1024] = "";
-  static char cached_git_info[128] = "";
+  static char last_directory[1024];
+  static char cached_git_info[128];
   static int cached_in_git_repo = 0;
+
+  // Define color reset code
+  const char *COLOR_RESET = "\033[0m";
+
+  // Initialize static strings
+  last_directory[0] = '\0';
+  cached_git_info[0] = '\0';
+  git_info[0] = '\0';
+  strcpy(username, "Elden Lord");
 
   // Get handle to console
   HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+
+  // Enable VT processing for ANSI escape sequences
+  DWORD dwMode = 0;
+  GetConsoleMode(hConsole, &dwMode);
+  dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+  SetConsoleMode(hConsole, dwMode);
 
   // Initialize aliases
   init_aliases();
@@ -812,33 +759,6 @@ void lsh_loop(void) {
       char current_dir[256] = "";
       get_path_display(cwd, parent_dir, current_dir, sizeof(parent_dir));
 
-      // Ensure we still have room for status bar after prompt
-      ensure_status_bar_space(hConsole);
-
-      // Use different colors for different parts of the prompt
-      SetConsoleTextAttribute(hConsole, current_theme.PROMPT_COLOR);
-      printf("%s", username);
-
-      SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
-      printf(" in ");
-
-      SetConsoleTextAttribute(hConsole, current_theme.DIRECTORY_COLOR);
-      if (parent_dir[0] != '\0') {
-        printf("%s\\%s", parent_dir, current_dir);
-      } else {
-        printf("%s", current_dir);
-      }
-
-      SetConsoleTextAttribute(hConsole, current_theme.PROMPT_COLOR);
-      printf(" -> ");
-
-      // Reset to primary color for user input
-      SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
-      fflush(stdout);
-
-      // Update the status bar initially without Git info
-      update_status_bar(hConsole, "");
-
       // Check for Git info if directory has changed
       if (directory_changed) {
         // Update last directory
@@ -860,16 +780,23 @@ void lsh_loop(void) {
 
           if (has_repo_name) {
             snprintf(cached_git_info, sizeof(cached_git_info),
-                     "\u2387 %s [%s%s]", git_repo, git_branch,
+                     " git:(%s%s%s%s)", git_repo,
+                     strlen(git_branch) > 0 ? " " : "", git_branch,
                      is_dirty ? "*" : "");
           } else {
-            snprintf(cached_git_info, sizeof(cached_git_info), "\u2387 [%s%s]",
+            snprintf(cached_git_info, sizeof(cached_git_info), " git:(%s%s)",
                      git_branch, is_dirty ? "*" : "");
           }
         }
       }
 
-      // Use cached Git info (will be empty if not in a repo)
+      // Ensure we still have room for status bar after prompt
+      ensure_status_bar_space(hConsole);
+
+      // Update the status bar initially without Git info
+      update_status_bar(hConsole, "");
+
+      // Use cached Git info for status bar
       if (cached_in_git_repo) {
         strcpy(git_info, cached_git_info);
       }
@@ -878,6 +805,79 @@ void lsh_loop(void) {
       if (git_info[0] != '\0') {
         update_status_bar(hConsole, git_info);
       }
+
+      // Check if we should use ANSI colors based on the theme setting
+      if (current_theme.use_ansi_colors) {
+        // Print directory in Rose color (soft pink/peach)
+        printf("%s%s", current_theme.ANSI_ROSE, current_dir);
+
+        // Git info with exact colors
+        if (cached_in_git_repo) {
+          // Git syntax in Pine color (soft blue)
+          printf("%s git:(", current_theme.ANSI_PINE);
+
+          // Repository name in Love color (soft red)
+          printf("%s", current_theme.ANSI_LOVE);
+
+          // Extract repository and branch name from cached_git_info
+          char repo_branch[128] = "";
+
+          // Git info format is " git:(repo branch*)" or " git:(branch*)"
+          // Extract content inside the parentheses
+          char *start = strstr(cached_git_info, "(");
+          char *end = strstr(cached_git_info, ")");
+
+          if (start && end && end > start) {
+            // Copy the content between parentheses
+            strncpy(repo_branch, start + 1, end - start - 1);
+            repo_branch[end - start - 1] = '\0';
+
+            // Print the repo/branch info
+            printf("%s", repo_branch);
+          }
+
+          // Closing parenthesis in Pine color (soft blue)
+          printf("%s)", current_theme.ANSI_PINE);
+        }
+
+        // Gold X character at end
+        printf("%s ✘ ", current_theme.ANSI_GOLD);
+
+        // Reset to default color for user input
+        printf("%s", COLOR_RESET);
+      } else {
+        // Fallback to standard console colors if ANSI not supported
+        SetConsoleTextAttribute(hConsole, current_theme.DIRECTORY_COLOR);
+        printf("%s", current_dir);
+
+        if (cached_in_git_repo) {
+          SetConsoleTextAttribute(hConsole, current_theme.ACCENT_COLOR);
+          printf(" git:(");
+
+          SetConsoleTextAttribute(hConsole, current_theme.PROMPT_COLOR);
+
+          char repo_branch[128] = "";
+          char *start = strstr(cached_git_info, "(");
+          char *end = strstr(cached_git_info, ")");
+
+          if (start && end && end > start) {
+            strncpy(repo_branch, start + 1, end - start - 1);
+            repo_branch[end - start - 1] = '\0';
+            printf("%s", repo_branch);
+          }
+
+          SetConsoleTextAttribute(hConsole, current_theme.ACCENT_COLOR);
+          printf(")");
+        }
+
+        SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN |
+                                              FOREGROUND_INTENSITY);
+        printf(" ✘ ");
+
+        SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+      }
+
+      fflush(stdout);
     }
 
     // Read user input

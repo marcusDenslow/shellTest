@@ -4,7 +4,7 @@
 #include "common.h"
 
 typedef struct {
-  // Main shell colors
+  // Standard console colors
   WORD PRIMARY_COLOR;   // Main text color
   WORD SECONDARY_COLOR; // Secondary text color
   WORD ACCENT_COLOR;    // Color for highlights/important elements
@@ -32,6 +32,24 @@ typedef struct {
   WORD SYNTAX_COMMENT;      // Comments in syntax highlighting
   WORD SYNTAX_NUMBER;       // Numbers in syntax highlighting
   WORD SYNTAX_PREPROCESSOR; // Preprocessor in syntax highlighting
+
+  // ANSI true color definitions (for modern terminals)
+  char ANSI_BASE[20];      // Base color
+  char ANSI_SURFACE[20];   // Surface color
+  char ANSI_OVERLAY[20];   // Overlay color
+  char ANSI_MUTED[20];     // Muted color
+  char ANSI_SUBTLE[20];    // Subtle color
+  char ANSI_TEXT[20];      // Text color
+  char ANSI_LOVE[20];      // Love/Red color
+  char ANSI_GOLD[20];      // Gold color
+  char ANSI_ROSE[20];      // Rose/pink color
+  char ANSI_PINE[20];      // Pine color
+  char ANSI_FOAM[20];      // Foam color
+  char ANSI_IRIS[20];      // Iris color
+  char ANSI_HIGHLIGHT[20]; // Highlight color
+
+  // Flag to indicate if ANSI colors should be used
+  BOOL use_ansi_colors;
 
   // Name of the theme
   char name[32];

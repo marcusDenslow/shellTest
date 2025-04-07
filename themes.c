@@ -15,6 +15,7 @@ ShellTheme current_theme;
 
 // Define built-in themes
 static ShellTheme default_theme = {
+    // Standard console colors
     .PRIMARY_COLOR =
         FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE, // White
     .SECONDARY_COLOR =
@@ -49,39 +50,77 @@ static ShellTheme default_theme = {
     .SYNTAX_PREPROCESSOR =
         FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY, // Yellow
 
+    // ANSI colors for default theme (basic colors, not true full 24-bit colors)
+    .ANSI_BASE = "\033[37m",      // White
+    .ANSI_SURFACE = "\033[37m",   // White
+    .ANSI_OVERLAY = "\033[37m",   // White
+    .ANSI_MUTED = "\033[37m",     // White
+    .ANSI_SUBTLE = "\033[37m",    // White
+    .ANSI_TEXT = "\033[97m",      // Bright White
+    .ANSI_LOVE = "\033[91m",      // Bright Red
+    .ANSI_GOLD = "\033[93m",      // Bright Yellow
+    .ANSI_ROSE = "\033[95m",      // Bright Magenta
+    .ANSI_PINE = "\033[92m",      // Bright Green
+    .ANSI_FOAM = "\033[96m",      // Bright Cyan
+    .ANSI_IRIS = "\033[94m",      // Bright Blue
+    .ANSI_HIGHLIGHT = "\033[37m", // White
+
+    // Don't use ANSI colors for default theme
+    .use_ansi_colors = FALSE,
+
     .name = "default"};
 
 static ShellTheme rose_pine_theme = {
+    // Legacy console colors (for backward compatibility)
     .PRIMARY_COLOR =
         FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE, // White (base)
     .SECONDARY_COLOR =
         FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE, // Muted
-    .ACCENT_COLOR =
-        FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY, // Rose
-    .SUCCESS_COLOR = FOREGROUND_GREEN,                           // Pine
-    .ERROR_COLOR = FOREGROUND_RED | FOREGROUND_INTENSITY,        // Love
-    .WARNING_COLOR = FOREGROUND_RED | FOREGROUND_GREEN,          // Gold
+    .ACCENT_COLOR = FOREGROUND_BLUE, // Blue for git syntax
+    .SUCCESS_COLOR = FOREGROUND_GREEN,
+    .ERROR_COLOR = FOREGROUND_RED | FOREGROUND_INTENSITY,
+    .WARNING_COLOR = FOREGROUND_RED | FOREGROUND_GREEN,
 
-    .HEADER_COLOR =
-        FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY, // Rose
-    .STATUS_BAR_COLOR = 0,                                       // Base
+    .HEADER_COLOR = FOREGROUND_RED | FOREGROUND_BLUE,
+    .STATUS_BAR_COLOR = 0,
     .STATUS_TEXT_COLOR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE |
-                         FOREGROUND_INTENSITY,        // Text
-    .PROMPT_COLOR = FOREGROUND_RED | FOREGROUND_BLUE, // Iris
+                         FOREGROUND_INTENSITY,
+    .PROMPT_COLOR =
+        FOREGROUND_RED | FOREGROUND_INTENSITY, // Bright red for repo name
 
-    .DIRECTORY_COLOR = FOREGROUND_GREEN,                   // Pine
-    .EXECUTABLE_COLOR = FOREGROUND_RED | FOREGROUND_GREEN, // Gold
-    .TEXT_FILE_COLOR =
-        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE,    // Text
-    .IMAGE_FILE_COLOR = FOREGROUND_BLUE | FOREGROUND_INTENSITY, // Foam
-    .CODE_FILE_COLOR = FOREGROUND_BLUE,                         // Iris (muted)
-    .ARCHIVE_FILE_COLOR = FOREGROUND_RED,                       // Love (muted)
+    .DIRECTORY_COLOR =
+        FOREGROUND_RED | FOREGROUND_INTENSITY, // Bright pink for directory
 
-    .SYNTAX_KEYWORD = FOREGROUND_RED | FOREGROUND_BLUE,        // Iris
-    .SYNTAX_STRING = FOREGROUND_GREEN,                         // Pine
-    .SYNTAX_COMMENT = FOREGROUND_RED | FOREGROUND_GREEN | 0x8, // Muted
-    .SYNTAX_NUMBER = FOREGROUND_RED | FOREGROUND_INTENSITY,    // Love
-    .SYNTAX_PREPROCESSOR = FOREGROUND_RED | FOREGROUND_GREEN,  // Gold
+    .EXECUTABLE_COLOR = FOREGROUND_RED | FOREGROUND_GREEN,
+    .TEXT_FILE_COLOR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE,
+    .IMAGE_FILE_COLOR = FOREGROUND_BLUE,
+    .CODE_FILE_COLOR = FOREGROUND_BLUE,
+    .ARCHIVE_FILE_COLOR = FOREGROUND_RED,
+
+    .SYNTAX_KEYWORD = FOREGROUND_RED | FOREGROUND_BLUE,
+    .SYNTAX_STRING = FOREGROUND_GREEN,
+    .SYNTAX_COMMENT = FOREGROUND_RED | FOREGROUND_GREEN | 0x8,
+    .SYNTAX_NUMBER = FOREGROUND_RED,
+    .SYNTAX_PREPROCESSOR = FOREGROUND_RED | FOREGROUND_GREEN,
+
+    // ANSI true color definitions - exact Rose Pine colors
+    .ANSI_BASE = "\033[38;2;25;23;36m",      // Base color
+    .ANSI_SURFACE = "\033[38;2;31;29;46m",   // Surface color
+    .ANSI_OVERLAY = "\033[38;2;38;35;58m",   // Overlay color
+    .ANSI_MUTED = "\033[38;2;110;106;134m",  // Muted color
+    .ANSI_SUBTLE = "\033[38;2;144;140;170m", // Subtle color
+    .ANSI_TEXT = "\033[38;2;224;222;244m",   // Text color
+    .ANSI_LOVE = "\033[38;2;235;111;146m",   // Love/Red color
+    .ANSI_GOLD = "\033[38;2;246;193;119m",   // Gold color
+    // Updated Rose/pink color to a soft peach
+    .ANSI_ROSE = "\033[38;2;255;195;195m",   // Soft Peach
+    .ANSI_PINE = "\033[38;2;49;116;143m",    // Pine color
+    .ANSI_FOAM = "\033[38;2;156;207;216m",   // Foam color
+    .ANSI_IRIS = "\033[38;2;196;167;231m",   // Iris color
+    .ANSI_HIGHLIGHT = "\033[38;2;68;65;90m", // Highlight color
+
+    // Enable ANSI colors for Rose Pine theme
+    .use_ansi_colors = TRUE,
 
     .name = "rose-pine"};
 
@@ -154,7 +193,20 @@ void apply_current_theme(void) {
 
   // For now, just update the console's text color to the primary color
   HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-  SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+
+  // Enable VT processing for ANSI escape sequences if the theme uses them
+  if (current_theme.use_ansi_colors) {
+    DWORD dwMode = 0;
+    GetConsoleMode(hConsole, &dwMode);
+    dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    SetConsoleMode(hConsole, dwMode);
+
+    // Use ANSI text color
+    printf("%s", current_theme.ANSI_TEXT);
+  } else {
+    // Use standard console color
+    SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+  }
 }
 
 /**
@@ -170,10 +222,18 @@ const ShellTheme *get_current_theme(void) { return &current_theme; }
 void list_available_themes(void) {
   printf("Available themes:\n");
   printf("  default    - Standard shell colors\n");
-  printf("  rose-pine  - Soothing, warm color scheme\n");
+  printf(
+      "  rose-pine  - Soothing, warm color scheme with true color support\n");
 
   // Display which theme is currently active
-  printf("\nCurrent theme: %s\n", current_theme.name);
+  printf("\nCurrent theme: %s", current_theme.name);
+
+  // Display ANSI color status for current theme
+  if (current_theme.use_ansi_colors) {
+    printf(" (using true color)\n");
+  } else {
+    printf(" (using standard console colors)\n");
+  }
 }
 
 /**
@@ -190,7 +250,15 @@ int lsh_theme(char **args) {
     printf("  list      List available themes\n");
     printf("  set NAME  Set the current theme to NAME\n");
     printf("  show      Show current theme details\n");
-    printf("\nCurrent theme: %s\n", current_theme.name);
+    printf("\nCurrent theme: %s", current_theme.name);
+
+    // Display ANSI color status for current theme
+    if (current_theme.use_ansi_colors) {
+      printf(" (using true color)\n");
+    } else {
+      printf(" (using standard console colors)\n");
+    }
+
     return 1;
   }
 
@@ -217,6 +285,11 @@ int lsh_theme(char **args) {
         apply_current_theme();
 
         printf("Theme set to '%s'\n", args[2]);
+
+        // Display ANSI color status for the selected theme
+        if (current_theme.use_ansi_colors) {
+          printf("This theme uses true color for better visual appearance.\n");
+        }
       } else {
         fprintf(stderr, "Could not save theme setting\n");
       }
@@ -224,7 +297,23 @@ int lsh_theme(char **args) {
     return 1;
   } else if (strcmp(args[1], "show") == 0) {
     printf("Current theme: %s\n", current_theme.name);
-    // You could print color details here if desired
+
+    // Display ANSI color status
+    if (current_theme.use_ansi_colors) {
+      printf("Using true color mode");
+
+      // Show a color demo if using ANSI colors
+      printf("\nColor sample:\n");
+      printf("%sBase %sText %sLove %sGold %sRose %sPine %sFoam %sIris%s\n",
+             current_theme.ANSI_BASE, current_theme.ANSI_TEXT,
+             current_theme.ANSI_LOVE, current_theme.ANSI_GOLD,
+             current_theme.ANSI_ROSE, current_theme.ANSI_PINE,
+             current_theme.ANSI_FOAM, current_theme.ANSI_IRIS,
+             "\033[0m"); // Reset
+    } else {
+      printf("Using standard console colors\n");
+    }
+
     return 1;
   } else {
     printf("Unknown theme command: %s\n", args[1]);
