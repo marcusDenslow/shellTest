@@ -127,13 +127,14 @@ char *lsh_read_line(void) {
       // Calculate suggestion length
       int suggestionLen = strlen(suggestion) - strlen(buffer);
       if (suggestionLen > 0) {
-        // Clear the suggestion by filling with spaces using
-        // WriteConsoleOutputCharacter This avoids cursor movement
-        DWORD written;
-        FillConsoleOutputCharacter(hConsole, ' ', suggestionLen,
-                                   consoleInfo.dwCursorPosition, &written);
-        FillConsoleOutputAttribute(hConsole, originalAttributes, suggestionLen,
-                                   consoleInfo.dwCursorPosition, &written);
+        // Set cursor to current position
+        SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
+        // Clear the suggestion by printing spaces
+        for (int i = 0; i < suggestionLen; i++) {
+          putchar(' ');
+        }
+        // Reset cursor position
+        SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
       }
       free(suggestion);
       suggestion = NULL;
@@ -160,14 +161,24 @@ char *lsh_read_line(void) {
         // Use the highest frequency suggestion
         suggestion = freq_suggestions[0];
 
-        // Display the suggestion atomically (no cursor jumping)
-        display_suggestion_atomically(hConsole, promptEndPos, buffer,
-                                      suggestion, position, originalAttributes,
-                                      1 // This is a history-based suggestion
-        );
+        // Get current cursor position
+        GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
 
-        showing_suggestion = 1;
-        showing_history_suggestion = 1;
+        // Set text color to gray for suggestion
+        SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
+
+        // Calculate and display the part of suggestion not yet typed
+        const char *completion = suggestion + strlen(buffer);
+        if (completion && *completion) {
+          printf("%s", completion);
+          // Reset cursor position
+          SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
+          showing_suggestion = 1;
+          showing_history_suggestion = 1; // This is a history-based suggestion
+        }
+
+        // Reset color
+        SetConsoleTextAttribute(hConsole, originalAttributes);
 
         // Free all but the first suggestion which is now stored in 'suggestion'
         for (int i = 1; i < freq_suggestions_count; i++) {
@@ -179,15 +190,46 @@ char *lsh_read_line(void) {
         suggestion = find_context_best_match(buffer, position);
 
         if (suggestion) {
-          // Display the suggestion atomically (no cursor jumping)
-          display_suggestion_atomically(
-              hConsole, promptEndPos, buffer, suggestion, position,
-              originalAttributes,
-              0 // This is a file/command suggestion, not history
-          );
+          // Get current cursor position
+          GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
 
-          showing_suggestion = 1;
-          showing_history_suggestion = 0;
+          // Find the start of the current word
+          int word_start = position - 1;
+          while (word_start >= 0 && buffer[word_start] != ' ' &&
+                 buffer[word_start] != '\\' && buffer[word_start] != '|') {
+            word_start--;
+          }
+          word_start++; // Move past the space, backslash, or pipe
+
+          // Extract just the last word from the suggested path
+          const char *lastWord = strrchr(suggestion, ' ');
+          if (lastWord) {
+            lastWord++; // Move past the space
+          } else {
+            lastWord = suggestion;
+          }
+
+          // Extract just the last word from what we've typed so far
+          char currentWord[1024] = "";
+          strncpy(currentWord, buffer + word_start, position - word_start);
+          currentWord[position - word_start] = '\0';
+
+          // Only display the suggestion if it starts with what we're typing
+          // (case insensitive) and hasn't been completely typed already
+          if (_strnicmp(lastWord, currentWord, strlen(currentWord)) == 0 &&
+              _stricmp(lastWord, currentWord) != 0) {
+            // Set text color to gray for suggestion
+            SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
+            // Print only the part of the suggestion that hasn't been typed yet
+            printf("%s", lastWord + strlen(currentWord));
+            // Reset color
+            SetConsoleTextAttribute(hConsole, originalAttributes);
+            // Reset cursor position
+            SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
+            showing_suggestion = 1;
+            showing_history_suggestion =
+                0; // This is a command/file suggestion, not history
+          }
         }
       }
     }
@@ -234,29 +276,27 @@ char *lsh_read_line(void) {
         break;
 
       case 72: // Up arrow - history backwards
-        if (history_count > 0) {
+        if (history_count > 0 || get_history_count() > 0) {
           // Save original input if just starting navigation
           if (history_navigation_index == -1) {
             buffer[position] = '\0';
             strcpy(original_line, buffer);
             history_navigation_index = 0;
-          } else if (history_navigation_index < (history_count < HISTORY_SIZE
-                                                     ? history_count - 1
-                                                     : HISTORY_SIZE - 1)) {
-            // Move further back in history if possible
-            history_navigation_index++;
-          }
-
-          // Calculate which history entry to show
-          int history_entry;
-          if (history_count <= HISTORY_SIZE) {
-            // History buffer isn't full yet
-            history_entry = history_count - 1 - history_navigation_index;
           } else {
-            // History buffer is full (circular)
-            history_entry =
-                (history_index - 1 - history_navigation_index + HISTORY_SIZE) %
-                HISTORY_SIZE;
+            // Increase history index if possible
+            int in_memory_max = (history_count < HISTORY_SIZE)
+                                    ? history_count - 1
+                                    : HISTORY_SIZE - 1;
+            int persistent_max = get_history_count() - 1;
+
+            if (history_navigation_index <= in_memory_max) {
+              // Still within in-memory history
+              history_navigation_index++;
+            } else if (history_navigation_index - in_memory_max <=
+                       persistent_max) {
+              // Continue into persistent history
+              history_navigation_index++;
+            }
           }
 
           // Hide cursor to prevent flicker
@@ -275,8 +315,35 @@ char *lsh_read_line(void) {
           // Move back to start position
           SetConsoleCursorPosition(hConsole, promptEndPos);
 
-          // Copy history entry to buffer
-          strcpy(buffer, command_history[history_entry].command);
+          // Calculate which history entry to show
+          int in_memory_max = (history_count < HISTORY_SIZE) ? history_count - 1
+                                                             : HISTORY_SIZE - 1;
+
+          if (history_navigation_index <= in_memory_max) {
+            // Use in-memory history
+            int history_entry;
+            if (history_count <= HISTORY_SIZE) {
+              // History buffer isn't full yet
+              history_entry = history_count - 1 - history_navigation_index;
+            } else {
+              // History buffer is full (circular)
+              history_entry = (history_index - 1 - history_navigation_index +
+                               HISTORY_SIZE) %
+                              HISTORY_SIZE;
+            }
+
+            // Copy history entry to buffer
+            strcpy(buffer, command_history[history_entry].command);
+          } else {
+            // Use persistent history
+            int persistent_index = history_navigation_index - in_memory_max - 1;
+            PersistentHistoryEntry *entry =
+                get_history_entry(get_history_count() - 1 - persistent_index);
+            if (entry && entry->command) {
+              strcpy(buffer, entry->command);
+            }
+          }
+
           position = strlen(buffer);
 
           // Display the command
@@ -293,18 +360,6 @@ char *lsh_read_line(void) {
           // Move forward in history
           history_navigation_index--;
 
-          // Calculate which history entry to show
-          int history_entry;
-          if (history_count <= HISTORY_SIZE) {
-            // History buffer isn't full yet
-            history_entry = history_count - 1 - history_navigation_index;
-          } else {
-            // History buffer is full (circular)
-            history_entry =
-                (history_index - 1 - history_navigation_index + HISTORY_SIZE) %
-                HISTORY_SIZE;
-          }
-
           // Hide cursor to prevent flicker
           CONSOLE_CURSOR_INFO cursorInfo;
           GetConsoleCursorInfo(hConsole, &cursorInfo);
@@ -321,8 +376,35 @@ char *lsh_read_line(void) {
           // Move back to start position
           SetConsoleCursorPosition(hConsole, promptEndPos);
 
-          // Copy history entry to buffer
-          strcpy(buffer, command_history[history_entry].command);
+          // Calculate which history entry to show
+          int in_memory_max = (history_count < HISTORY_SIZE) ? history_count - 1
+                                                             : HISTORY_SIZE - 1;
+
+          if (history_navigation_index > in_memory_max) {
+            // Still in persistent history
+            int persistent_index = history_navigation_index - in_memory_max - 1;
+            PersistentHistoryEntry *entry =
+                get_history_entry(get_history_count() - 1 - persistent_index);
+            if (entry && entry->command) {
+              strcpy(buffer, entry->command);
+            }
+          } else {
+            // Back to in-memory history
+            int history_entry;
+            if (history_count <= HISTORY_SIZE) {
+              // History buffer isn't full yet
+              history_entry = history_count - 1 - history_navigation_index;
+            } else {
+              // History buffer is full (circular)
+              history_entry = (history_index - 1 - history_navigation_index +
+                               HISTORY_SIZE) %
+                              HISTORY_SIZE;
+            }
+
+            // Copy history entry to buffer
+            strcpy(buffer, command_history[history_entry].command);
+          }
+
           position = strlen(buffer);
 
           // Display the command
@@ -586,14 +668,6 @@ char *lsh_read_line(void) {
     } else if (c == KEY_BACKSPACE) {
       // User pressed Backspace
       if (position > 0) {
-        // Get current cursor position to check for line wrapping
-        CONSOLE_SCREEN_BUFFER_INFO csbi;
-        GetConsoleScreenBufferInfo(hConsole, &csbi);
-
-        // Check if we're at the beginning of a wrapped line
-        BOOL at_line_start = (csbi.dwCursorPosition.X == 0 &&
-                              csbi.dwCursorPosition.Y > promptEndPos.Y);
-
         if (ctrlPressed) {
           // Handle Ctrl+Backspace - delete entire word
           // Find the start of the current word
@@ -694,61 +768,6 @@ char *lsh_read_line(void) {
           tab_num_matches = 0;
           tab_index = 0;
           last_tab_prefix[0] = '\0';
-        }
-        // Handle line-wrapping case specifically
-        else if (at_line_start) {
-          // We're at the start of a wrapped line - need special handling
-
-          // Hide cursor during full redraw
-          CONSOLE_CURSOR_INFO cursorInfo;
-          GetConsoleCursorInfo(hConsole, &cursorInfo);
-          BOOL originalCursorVisible = cursorInfo.bVisible;
-          cursorInfo.bVisible = FALSE;
-          SetConsoleCursorInfo(hConsole, &cursorInfo);
-
-          // Remove character from buffer
-          position--;
-          buffer[position] =
-              '\0'; // Temporarily terminate to calculate correct display
-
-          // Now do a full redraw from the beginning
-          SetConsoleCursorPosition(hConsole, promptEndPos);
-
-          // Clear enough space for the entire command
-          DWORD written;
-          for (int i = 0; i < console_width * 5;
-               i++) { // Clear several lines to be safe
-            putchar(' ');
-          }
-
-          // Move back to prompt position
-          SetConsoleCursorPosition(hConsole, promptEndPos);
-
-          // Reprint the command with the character removed
-          memmove(buffer + position, buffer + position + 1,
-                  strlen(buffer + position + 1) + 1);
-          printf("%s", buffer);
-
-          // Move cursor to the new position
-          SetConsoleCursorPosition(hConsole, promptEndPos);
-          for (int i = 0; i < position; i++) {
-            // Move cursor forward correctly, handling wrapping
-            CONSOLE_SCREEN_BUFFER_INFO tempCsbi;
-            GetConsoleScreenBufferInfo(hConsole, &tempCsbi);
-
-            if (tempCsbi.dwCursorPosition.X < console_width - 1) {
-              tempCsbi.dwCursorPosition.X++;
-            } else {
-              tempCsbi.dwCursorPosition.X = 0;
-              tempCsbi.dwCursorPosition.Y++;
-            }
-
-            SetConsoleCursorPosition(hConsole, tempCsbi.dwCursorPosition);
-          }
-
-          // Restore cursor visibility
-          cursorInfo.bVisible = originalCursorVisible;
-          SetConsoleCursorInfo(hConsole, &cursorInfo);
         } else if (position == strlen(buffer)) {
           // At end of line, backspace is simpler
           position--;
