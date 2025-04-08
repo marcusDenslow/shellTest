@@ -1795,32 +1795,47 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
   if (is_history_suggestion) {
     // Skip what the user already typed
     strcpy(suggestionText, completionText + strlen(buffer));
-
-    // Set text color for history suggestions - use dim cyan for distinction
-    SetConsoleTextAttribute(hConsole, FOREGROUND_BLUE | FOREGROUND_GREEN);
   } else {
     // For regular suggestions
     strcpy(suggestionText, completionText + strlen(currentWord));
-
-    // Set text color to gray for normal suggestions
-    SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
   }
 
-  // Write the suggestion in one operation
-  DWORD numCharsWritten;
-  WriteConsole(hConsole, suggestionText, strlen(suggestionText),
-               &numCharsWritten, NULL);
+  // Don't display if suggestion is empty
+  if (strlen(suggestionText) == 0) {
+    // Restore cursor visibility and return early
+    cursorInfo.bVisible = originalCursorVisible;
+    SetConsoleCursorInfo(hConsole, &cursorInfo);
+    return;
+  }
 
-  // Reset color
-  SetConsoleTextAttribute(hConsole, originalAttributes);
+  // Use the original gray color for all suggestions for consistency
+  WORD suggestionColor = FOREGROUND_INTENSITY; // Light gray for all suggestions
 
-  // Reset cursor position
-  SetConsoleCursorPosition(hConsole, csbi.dwCursorPosition);
+  // Instead of using WriteConsole (which moves the cursor), use the direct
+  // output functions:
+  // 1. WriteConsoleOutputCharacter - writes text without moving cursor
+  // 2. FillConsoleOutputAttribute - sets text color without moving cursor
+
+  // Write the suggestion characters
+  DWORD charsWritten;
+  WriteConsoleOutputCharacter(hConsole, suggestionText, strlen(suggestionText),
+                              csbi.dwCursorPosition, &charsWritten);
+
+  // Set the suggestion color attributes
+  DWORD attrsWritten;
+  FillConsoleOutputAttribute(hConsole, suggestionColor, strlen(suggestionText),
+                             csbi.dwCursorPosition, &attrsWritten);
+
+  // No need to reset cursor position since it didn't move
+
   // Restore cursor visibility
   cursorInfo.bVisible = originalCursorVisible;
   SetConsoleCursorInfo(hConsole, &cursorInfo);
 }
 
+/**
+ * Register a command with its argument type for tab completion
+ */
 void register_command(const char *cmd, ArgumentType type, const char *desc) {
   if (command_count < MAX_REGISTERED_COMMANDS) {
     command_registry[command_count].command = _strdup(cmd);
