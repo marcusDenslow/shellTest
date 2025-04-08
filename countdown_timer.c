@@ -351,7 +351,7 @@ static void show_timer_notification() {
   // Add key instruction - use theme secondary color
   SetConsoleCursorPosition(hConsole, (COORD){left + 10, top + 5});
   SetConsoleTextAttribute(hConsole, current_theme.SECONDARY_COLOR);
-  printf("Press q and then Q to close");
+  printf("press shift + q to close");
 
   // Reset attributes
   SetConsoleTextAttribute(hConsole, originalAttributes);

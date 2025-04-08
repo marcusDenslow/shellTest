@@ -150,9 +150,9 @@ char *lsh_read_line(void) {
       int freq_suggestions_count = 0;
       char **freq_suggestions = NULL;
 
-      // Only try frequency suggestions if we have at least a few characters
-      // typed
-      if (strlen(buffer) >= 2) {
+      // Only try frequency suggestions if we have at least 1 character typed
+      // (changed from 2)
+      if (strlen(buffer) >= 1) {
         freq_suggestions =
             get_frequency_suggestions(buffer, &freq_suggestions_count);
       }
@@ -175,6 +175,12 @@ char *lsh_read_line(void) {
           SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
           showing_suggestion = 1;
           showing_history_suggestion = 1; // This is a history-based suggestion
+        } else {
+          // No completion available, clean up
+          free(suggestion);
+          suggestion = NULL;
+          showing_suggestion = 0;
+          showing_history_suggestion = 0;
         }
 
         // Reset color
@@ -185,7 +191,11 @@ char *lsh_read_line(void) {
           free(freq_suggestions[i]);
         }
         free(freq_suggestions);
-      } else {
+      }
+
+      // If no history suggestion was found or shown, try context-aware
+      // suggestion
+      if (!showing_suggestion) {
         // Fall back to context-aware best match
         suggestion = find_context_best_match(buffer, position);
 
@@ -229,6 +239,11 @@ char *lsh_read_line(void) {
             showing_suggestion = 1;
             showing_history_suggestion =
                 0; // This is a command/file suggestion, not history
+          } else {
+            // No valid suggestion part, clean up
+            free(suggestion);
+            suggestion = NULL;
+            showing_suggestion = 0;
           }
         }
       }
@@ -412,7 +427,7 @@ char *lsh_read_line(void) {
     // Check for Shift+Enter (Enter key with shift pressed)
     else if (c == KEY_ENTER && shiftPressed) {
       // Handle Shift+Enter for accepting history suggestion
-      if (showing_suggestion && showing_history_suggestion && suggestion) {
+      if (showing_suggestion && suggestion) {
         // Copy the suggestion to the buffer
         strcpy(buffer, suggestion);
         position = strlen(buffer);

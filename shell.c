@@ -156,87 +156,58 @@ void check_console_resize(HANDLE hConsole) {
 
 // Modify the update_status_bar function to include timer information
 void update_status_bar(HANDLE hConsole, const char *git_info) {
-  // Skip if status bar is not enabled yet
   if (!g_status_bar_enabled)
     return;
 
-  // Check for resize
   check_console_resize(hConsole);
 
-  // Get current console information
   CONSOLE_SCREEN_BUFFER_INFO csbi;
   if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) {
-    return; // Can't proceed without console info
+    return;
   }
 
-  // Save current cursor position
   COORD cursorPos = csbi.dwCursorPosition;
 
-  // Update console dimensions in case of resize
   g_console_width = csbi.dwSize.X;
 
-  // Always use the bottom line of the current console window
   g_status_line = csbi.srWindow.Bottom;
 
-  // Hide cursor during the update
-  CONSOLE_CURSOR_INFO cursorInfo;
-  GetConsoleCursorInfo(hConsole, &cursorInfo);
-  BOOL originalCursorVisible = cursorInfo.bVisible;
-  cursorInfo.bVisible = FALSE;
-  SetConsoleCursorInfo(hConsole, &cursorInfo);
+  CONSOLE_CURSOR_INFO cursorinfo;
+  GetConsoleCursorInfo(hConsole, &cursorinfo);
+  BOOL originalCursorVisable = cursorinfo.bVisible;
+  cursorinfo.bVisible = FALSE;
+  SetConsoleCursorInfo(hConsole, &cursorinfo);
 
-  // Position cursor at beginning of status line (bottom line)
   COORD statusPos = {0, g_status_line};
 
-  // Clear the status bar in one operation
   DWORD charsWritten;
   FillConsoleOutputCharacter(hConsole, ' ', g_console_width, statusPos,
                              &charsWritten);
   FillConsoleOutputAttribute(hConsole, g_status_attributes, g_console_width,
                              statusPos, &charsWritten);
 
-  // Check if we have a timer running
   const char *timer_info = get_timer_display();
   BOOL has_timer = is_timer_active() && timer_info && timer_info[0];
 
   if (has_timer) {
-    // Display timer info on the right
     int timer_info_len = strlen(timer_info);
     COORD timerPos = {g_console_width - timer_info_len - 2, g_status_line};
 
-    // Set text color for timer info using theme warning color
     WORD timerInfoColor = g_status_attributes | current_theme.WARNING_COLOR;
 
     WriteConsoleOutputCharacter(hConsole, timer_info, timer_info_len, timerPos,
                                 &charsWritten);
-
     FillConsoleOutputAttribute(hConsole, timerInfoColor, timer_info_len,
                                timerPos, &charsWritten);
-
-    // Also show default message on left with theme secondary color
-    const char *defaultMsg = " Shell Status";
-    WORD defaultMsgColor = g_status_attributes | current_theme.SECONDARY_COLOR;
-    WriteConsoleOutputCharacter(hConsole, defaultMsg, strlen(defaultMsg),
-                                statusPos, &charsWritten);
-    FillConsoleOutputAttribute(hConsole, defaultMsgColor, strlen(defaultMsg),
-                               statusPos, &charsWritten);
   } else {
-    // Default message when no timer is available
-    const char *defaultMsg = " Shell Status";
-    WORD defaultMsgColor = g_status_attributes | current_theme.SECONDARY_COLOR;
-    WriteConsoleOutputCharacter(hConsole, defaultMsg, strlen(defaultMsg),
-                                statusPos, &charsWritten);
-    FillConsoleOutputAttribute(hConsole, defaultMsgColor, strlen(defaultMsg),
-                               statusPos, &charsWritten);
   }
 
-  // Restore original cursor position
   SetConsoleCursorPosition(hConsole, cursorPos);
 
-  // Restore cursor visibility
-  cursorInfo.bVisible = originalCursorVisible;
-  SetConsoleCursorInfo(hConsole, &cursorInfo);
+  cursorinfo.bVisible = originalCursorVisable;
+  SetConsoleCursorInfo(hConsole, &cursorinfo);
 }
+
 /**
  * Initialize the status bar at the bottom of the screen
  */

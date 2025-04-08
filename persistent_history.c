@@ -558,6 +558,12 @@ char **get_frequency_suggestions(const char *prefix, int *num_suggestions) {
     return NULL;
   }
 
+  // Require at least 1 character (changed from 2)
+  if (strlen(prefix) < 1) {
+    *num_suggestions = 0;
+    return NULL;
+  }
+
   // Create a temporary array to track matches and their frequencies
   typedef struct {
     char *command;
