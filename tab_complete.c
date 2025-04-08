@@ -1808,8 +1808,13 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
     return;
   }
 
-  // Use the original gray color for all suggestions for consistency
-  WORD suggestionColor = FOREGROUND_INTENSITY; // Light gray for all suggestions
+  // Use different colors based on suggestion type:
+  // - History suggestions: Default gray (FOREGROUND_INTENSITY)
+  // - Regular suggestions: Dark blue (FOREGROUND_BLUE)
+  WORD suggestionColor =
+      is_history_suggestion ? FOREGROUND_INTENSITY
+                            : // Light gray for history suggestions
+          FOREGROUND_BLUE;    // Dark blue for normal suggestions
 
   // Instead of using WriteConsole (which moves the cursor), use the direct
   // output functions:
