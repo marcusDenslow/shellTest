@@ -124,6 +124,67 @@ static ShellTheme rose_pine_theme = {
 
     .name = "rose-pine"};
 
+static ShellTheme catppuccin_mocha_theme = {
+    // Legacy console colors (for backward compatibility)
+    .PRIMARY_COLOR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE |
+                     FOREGROUND_INTENSITY, // Bright white for text
+    .SECONDARY_COLOR =
+        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE, // White (dimmer)
+    .ACCENT_COLOR =
+        FOREGROUND_BLUE | FOREGROUND_INTENSITY, // Bright Blue for accent
+    .SUCCESS_COLOR = FOREGROUND_GREEN | FOREGROUND_INTENSITY, // Bright Green
+    .ERROR_COLOR = FOREGROUND_RED | FOREGROUND_INTENSITY,     // Bright Red
+    .WARNING_COLOR =
+        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY, // Yellow
+
+    .HEADER_COLOR = FOREGROUND_RED | FOREGROUND_BLUE |
+                    FOREGROUND_INTENSITY, // Mauve color for headers
+    .STATUS_BAR_COLOR = 0,                // Black/dark background
+    .STATUS_TEXT_COLOR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE |
+                         FOREGROUND_INTENSITY, // Bright White
+    .PROMPT_COLOR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE |
+                    FOREGROUND_INTENSITY, // Blue text for prompt
+
+    .DIRECTORY_COLOR = FOREGROUND_BLUE | FOREGROUND_GREEN |
+                       FOREGROUND_INTENSITY, // Teal for directories
+    .EXECUTABLE_COLOR = FOREGROUND_RED | FOREGROUND_GREEN |
+                        FOREGROUND_INTENSITY, // Yellow for executables
+    .TEXT_FILE_COLOR = FOREGROUND_RED | FOREGROUND_GREEN |
+                       FOREGROUND_BLUE, // White for text files
+    .IMAGE_FILE_COLOR = FOREGROUND_RED | FOREGROUND_INTENSITY, // Red for images
+    .CODE_FILE_COLOR = FOREGROUND_BLUE | FOREGROUND_INTENSITY, // Blue for code
+    .ARCHIVE_FILE_COLOR =
+        FOREGROUND_GREEN | FOREGROUND_INTENSITY, // Green for archives
+
+    .SYNTAX_KEYWORD =
+        FOREGROUND_BLUE | FOREGROUND_INTENSITY, // Blue for keywords
+    .SYNTAX_STRING =
+        FOREGROUND_GREEN | FOREGROUND_INTENSITY,            // Green for strings
+    .SYNTAX_COMMENT = FOREGROUND_INTENSITY,                 // Gray for comments
+    .SYNTAX_NUMBER = FOREGROUND_RED | FOREGROUND_INTENSITY, // Red for numbers
+    .SYNTAX_PREPROCESSOR = FOREGROUND_GREEN | FOREGROUND_BLUE |
+                           FOREGROUND_INTENSITY, // Cyan for preprocessor
+
+    // ANSI true color definitions for Catppuccin Mocha
+    .ANSI_BASE = "\033[38;2;30;30;46m",      // Base color #1e1e2e
+    .ANSI_SURFACE = "\033[38;2;49;50;68m",   // Surface color #313244
+    .ANSI_OVERLAY = "\033[38;2;69;71;90m",   // Overlay color #45475a
+    .ANSI_MUTED = "\033[38;2;186;194;222m",  // Muted color #bac2de (subtext1)
+    .ANSI_SUBTLE = "\033[38;2;166;173;200m", // Subtle color #a6adc8 (subtext0)
+    .ANSI_TEXT = "\033[38;2;205;214;244m",   // Text color #cdd6f4
+    .ANSI_LOVE = "\033[38;2;243;139;168m",   // Love/Red color #f38ba8
+    .ANSI_GOLD = "\033[38;2;249;226;175m",   // Gold/Yellow color #f9e2af
+    .ANSI_ROSE = "\033[38;2;245;194;231m",   // Pink color #f5c2e7
+    .ANSI_PINE = "\033[38;2;166;227;161m",   // Green color #a6e3a1
+    .ANSI_FOAM = "\033[38;2;148;226;213m",   // Teal color #94e2d5
+    .ANSI_IRIS = "\033[38;2;203;166;247m",   // Mauve/Purple color #cba6f7
+    .ANSI_HIGHLIGHT = "\033[38;2;180;190;254m", // Lavender highlight #b4befe
+
+    // Enable ANSI colors for Catppuccin Mocha theme
+    .use_ansi_colors = TRUE,
+
+    .name = "catppuccin-mocha"};
+
 // Path to the theme configuration file
 char theme_config_path[MAX_PATH];
 
@@ -175,6 +236,9 @@ int load_theme(const char *theme_name) {
   } else if (strcmp(theme_name, "rose-pine") == 0) {
     memcpy(&current_theme, &rose_pine_theme, sizeof(ShellTheme));
     return 1;
+  } else if (strcmp(theme_name, "catppuccin-mocha") == 0) {
+    memcpy(&current_theme, &catppuccin_mocha_theme, sizeof(ShellTheme));
+    return 1;
   }
 
   // Theme not found
@@ -224,6 +288,7 @@ void list_available_themes(void) {
   printf("  default    - Standard shell colors\n");
   printf(
       "  rose-pine  - Soothing, warm color scheme with true color support\n");
+  printf("  catppuccin-mocha - Deep dark theme with vibrant accent colors");
 
   // Display which theme is currently active
   printf("\nCurrent theme: %s", current_theme.name);
@@ -322,4 +387,58 @@ int lsh_theme(char **args) {
   }
 
   return 1;
+}
+char **get_theme_names(int *theme_count) {
+  // Define the hardcoded themes
+  char *builtin_themes[] = {"default", "rose-pine", "catppuccin-mocha"};
+  int builtin_count = sizeof(builtin_themes) / sizeof(builtin_themes[0]);
+
+  // Try to open the theme config file to check for custom themes
+  FILE *config_file = fopen(theme_config_path, "r");
+  char custom_theme[32];
+  int has_custom_theme = 0;
+
+  if (config_file) {
+    char theme_line[64];
+    while (fgets(theme_line, sizeof(theme_line), config_file)) {
+      if (sscanf(theme_line, "theme=%31s", custom_theme) == 1) {
+        // Check if this is a custom theme (not one of our builtin themes)
+        int is_builtin = 0;
+        for (int i = 0; i < builtin_count; i++) {
+          if (strcmp(custom_theme, builtin_themes[i]) == 0) {
+            is_builtin = 1;
+            break;
+          }
+        }
+
+        if (!is_builtin) {
+          has_custom_theme = 1;
+          break;
+        }
+      }
+    }
+    fclose(config_file);
+  }
+
+  // Allocate space for themes (builtin + potential custom theme)
+  int total_themes = builtin_count + (has_custom_theme ? 1 : 0);
+  char **theme_names = (char **)malloc(total_themes * sizeof(char *));
+  if (!theme_names) {
+    fprintf(stderr, "lsh: allocation error in get_theme_names\n");
+    *theme_count = 0;
+    return NULL;
+  }
+
+  // Copy builtin theme names
+  for (int i = 0; i < builtin_count; i++) {
+    theme_names[i] = _strdup(builtin_themes[i]);
+  }
+
+  // Add custom theme if found
+  if (has_custom_theme) {
+    theme_names[builtin_count] = _strdup(custom_theme);
+  }
+
+  *theme_count = total_themes;
+  return theme_names;
 }

@@ -11,6 +11,7 @@
 #include "filters.h" // Added for filter commands
 #include "persistent_history.h"
 #include "structured_data.h" // Added for table header information
+#include "themes.h"
 
 // Define field types as constants
 #define FIELD_TYPE_NAME 0
@@ -995,6 +996,58 @@ char **find_context_matches(const char *buffer, int position,
 
   // If we're in argument mode, handle context-specific suggestions
   if (is_argument) {
+    // Special case for "theme set" command
+    if (strcasecmp(cmd, "theme") == 0) {
+      // Extract the rest of the command line
+      char *rest = buffer + cmd_end;
+      while (*rest && isspace(*rest))
+        rest++; // Skip whitespace
+
+      // Check if we're in "theme set" context
+      if (strncasecmp(rest, "set", 3) == 0 &&
+          (rest[3] == '\0' || isspace(rest[3]))) {
+        // We're in "theme set" context, get the theme prefix
+        char *theme_prefix = rest + 3; // Start after "set"
+        while (*theme_prefix && isspace(*theme_prefix))
+          theme_prefix++; // Skip whitespace
+
+        // Get theme suggestions
+        int theme_count;
+        char **theme_names = get_theme_names(&theme_count);
+
+        if (theme_names && theme_count > 0) {
+          // Filter theme names by prefix
+          char **matches = (char **)malloc(theme_count * sizeof(char *));
+          if (!matches) {
+            for (int i = 0; i < theme_count; i++) {
+              free(theme_names[i]);
+            }
+            free(theme_names);
+            *num_matches = 0;
+            return NULL;
+          }
+
+          int match_count = 0;
+          for (int i = 0; i < theme_count; i++) {
+            if (strlen(theme_prefix) == 0 ||
+                _strnicmp(theme_names[i], theme_prefix, strlen(theme_prefix)) ==
+                    0) {
+              matches[match_count++] = _strdup(theme_names[i]);
+            }
+          }
+
+          // Free the original theme names
+          for (int i = 0; i < theme_count; i++) {
+            free(theme_names[i]);
+          }
+          free(theme_names);
+
+          *num_matches = match_count;
+          return matches;
+        }
+      }
+    }
+
     // Get the argument type for this command
     ArgumentType arg_type = get_command_arg_type(cmd);
 
@@ -1118,6 +1171,43 @@ char **find_context_matches(const char *buffer, int position,
     }
       return NULL;
 
+    case ARG_TYPE_THEME: {
+      int theme_count;
+      char **theme_names = get_theme_names(&theme_count);
+
+      if (theme_names && theme_count > 0) {
+        // Filter theme names by prefix if any
+        int match_count = 0;
+        char **matches = (char **)malloc(theme_count * sizeof(char *));
+
+        if (!matches) {
+          for (int i = 0; i < theme_count; i++) {
+            free(theme_names[i]);
+          }
+          free(theme_names);
+          *num_matches = 0;
+          return NULL;
+        }
+
+        for (int i = 0; i < theme_count; i++) {
+          if (partial_text[0] == '\0' || _strnicmp(theme_names[i], partial_text,
+                                                   strlen(partial_text)) == 0) {
+            matches[match_count++] = _strdup(theme_names[i]);
+          }
+        }
+
+        // Free the original theme names
+        for (int i = 0; i < theme_count; i++) {
+          free(theme_names[i]);
+        }
+        free(theme_names);
+
+        *num_matches = match_count;
+        return matches;
+      }
+      return NULL;
+    }
+
     case ARG_TYPE_BOTH:
     case ARG_TYPE_ANY:
     default:
@@ -1219,7 +1309,6 @@ char **find_context_matches(const char *buffer, int position,
   return find_matches(partial_text, position == strlen(partial_text),
                       num_matches);
 }
-
 /**
  * Find directory matches for the given partial path
  * Used for cd command tab completion
@@ -1877,10 +1966,10 @@ void init_command_registry(void) {
   register_command("weather", ARG_TYPE_FAVORITE_CITY,
                    "show weather information for a city");
   register_command("clip", ARG_TYPE_FILE, "Copy file contents to clipboard");
+  register_command("theme", ARG_TYPE_ANY, "Set or list themes");
 
   // Add more commands as needed
 }
-
 /**
  * Get the argument type for a command
  */

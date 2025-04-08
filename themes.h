@@ -60,6 +60,7 @@ int load_theme(const char *theme_name);
 void apply_current_theme(void);
 const ShellTheme *get_current_theme(void);
 void list_available_themes(void);
+char **get_theme_names(int *theme_count);
 
 extern ShellTheme current_theme;
 

@@ -34,6 +34,7 @@ typedef enum {
   ARG_TYPE_ALIAS,     // Alias names
   ARG_TYPE_BOTH,      // Both files and directories
   ARG_TYPE_FAVORITE_CITY,
+  ARG_TYPE_THEME,
 } ArgumentType;
 
 /**
