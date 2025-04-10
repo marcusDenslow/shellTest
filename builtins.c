@@ -78,7 +78,7 @@ char *builtin_str[] = {
     "bookmark", "bookmarks", "goto",        "unbookmark",
     "weather",  "grep",      "cities",      "fzf",
     "ripgrep",  "clip",      "echo",        "self-destruct",
-    "theme",
+    "theme",    "loc",
 };
 
 // Add to the builtin_func array:
@@ -123,6 +123,7 @@ int (*builtin_func[])(char **) = {
     &lsh_echo,
     &lsh_self_destruct,
     &lsh_theme,
+    &lsh_loc,
 };
 
 // Return the number of built-in commands
@@ -3569,6 +3570,243 @@ int lsh_self_destruct() {
   printf("\n");
   printf("self fucking destructed bro\n");
   return 1;
+}
+
+/**
+ * Forward declarations for helper functions
+ */
+int is_source_code_file(const char *filename);
+unsigned long count_lines_in_file(const char *filename);
+void count_lines_in_directory(const char *directory, unsigned long *total_files,
+                              unsigned long *total_lines, int recursive,
+                              int verbose, HANDLE hConsole);
+
+/**
+ * Count lines of code in a project directory
+ *
+ * @param args Command arguments
+ * @return Always returns 1 to continue the shell
+ */
+int lsh_loc(char **args) {
+  // Default to current directory if no path provided
+  const char *path = args[1] ? args[1] : ".";
+  // Track statistics
+  unsigned long total_files = 0;
+  unsigned long total_lines = 0;
+  // Flag to control recursion (default to recursive)
+  int recursive = 1;
+  // Flag to control verbose output (default to non-verbose)
+  int verbose = 0;
+
+  // Process command flags
+  int path_arg_index = 1;
+  for (int i = 1; args[i] && args[i][0] == '-'; i++) {
+    if (strcmp(args[i], "-n") == 0 || strcmp(args[i], "--no-recursive") == 0) {
+      recursive = 0;
+      path_arg_index = i + 1;
+    } else if (strcmp(args[i], "-v") == 0 ||
+               strcmp(args[i], "--verbose") == 0) {
+      verbose = 1;
+      path_arg_index = i + 1;
+    } else if (strcmp(args[i], "-h") == 0 || strcmp(args[i], "--help") == 0) {
+      printf("\nUsage: loc [options] [directory]\n");
+      printf("Count lines of code in files within a directory.\n\n");
+      printf("Options:\n");
+      printf("  -n, --no-recursive   Don't recurse into subdirectories\n");
+      printf("  -v, --verbose        Show details for each file\n");
+      printf("  -h, --help           Display this help message\n\n");
+      return 1;
+    }
+  }
+
+  // Update path if a flag was specified
+  if (args[path_arg_index]) {
+    path = args[path_arg_index];
+  }
+
+  // Get handle to console for colored output
+  HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  WORD originalAttributes;
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  GetConsoleScreenBufferInfo(hConsole, &csbi);
+  originalAttributes = csbi.wAttributes;
+
+  // Use theme header color for title
+  SetConsoleTextAttribute(hConsole, current_theme.HEADER_COLOR);
+  printf("\nCounting lines of code in '%s'%s...\n", path,
+         recursive ? " (recursive)" : "");
+  SetConsoleTextAttribute(hConsole, originalAttributes);
+
+  // Start the count process
+  count_lines_in_directory(path, &total_files, &total_lines, recursive, verbose,
+                           hConsole);
+
+  // Print the results with nice formatting
+  printf("\n");
+  SetConsoleTextAttribute(hConsole, current_theme.ACCENT_COLOR);
+  printf("Results:\n");
+  SetConsoleTextAttribute(hConsole, originalAttributes);
+
+  printf("  Files scanned: ");
+  SetConsoleTextAttribute(hConsole, current_theme.DIRECTORY_COLOR);
+  printf("%lu\n", total_files);
+  SetConsoleTextAttribute(hConsole, originalAttributes);
+
+  printf("  Total lines:   ");
+  SetConsoleTextAttribute(hConsole, current_theme.CODE_FILE_COLOR);
+  printf("%lu\n\n", total_lines);
+  SetConsoleTextAttribute(hConsole, originalAttributes);
+
+  return 1;
+}
+
+/**
+ * Check if a file is a source code file based on its extension
+ */
+int is_source_code_file(const char *filename) {
+  // Get the file extension
+  const char *ext = strrchr(filename, '.');
+  if (!ext) {
+    return 0; // No extension, don't count it
+  }
+
+  ext++; // Skip the dot
+
+  // List of common source code file extensions
+  const char *code_extensions[] = {
+      // C and C++
+      "c", "h", "cpp", "hpp", "cc", "c++", "cxx", "hxx",
+      // Web
+      "html", "htm", "css", "js", "jsx", "ts", "tsx", "php",
+      // Other languages
+      "py", "java", "cs", "go", "rb", "pl", "swift", "kt", "rs", "scala",
+      "groovy", "lua", "r", "m", "mm",
+      // Scripts
+      "sh", "bat", "ps1", "cmd",
+      // Data/config
+      "json", "xml", "yaml", "yml", "toml", "ini", "conf", "md", NULL};
+
+  // Check if extension is in the include list
+  for (int i = 0; code_extensions[i]; i++) {
+    if (strcasecmp(ext, code_extensions[i]) == 0) {
+      return 1; // Included extension
+    }
+  }
+
+  // Default behavior - don't count other files
+  return 0;
+}
+
+/**
+ * Count lines in a file
+ */
+unsigned long count_lines_in_file(const char *filename) {
+  FILE *file = fopen(filename, "r");
+  if (!file) {
+    return 0; // Unable to open file
+  }
+
+  unsigned long line_count = 0;
+  int ch;
+  int prev_ch = 0;
+
+  while ((ch = fgetc(file)) != EOF) {
+    // Count newlines
+    if (ch == '\n') {
+      line_count++;
+    }
+    prev_ch = ch;
+  }
+
+  // Count last line if it doesn't end with a newline
+  if (prev_ch != '\n' && prev_ch != 0) {
+    line_count++;
+  }
+
+  fclose(file);
+  return line_count;
+}
+
+/**
+ * Helper function to count lines in a directory
+ */
+void count_lines_in_directory(const char *directory, unsigned long *total_files,
+                              unsigned long *total_lines, int recursive,
+                              int verbose, HANDLE hConsole) {
+  char search_path[MAX_PATH];
+  WIN32_FIND_DATA find_data;
+  HANDLE h_find;
+  WORD originalAttributes;
+
+  // Get original console attributes
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  GetConsoleScreenBufferInfo(hConsole, &csbi);
+  originalAttributes = csbi.wAttributes;
+
+  // Construct search pattern
+  snprintf(search_path, sizeof(search_path), "%s\\*", directory);
+
+  // Start file search
+  h_find = FindFirstFile(search_path, &find_data);
+
+  if (h_find == INVALID_HANDLE_VALUE) {
+    SetConsoleTextAttribute(hConsole, current_theme.WARNING_COLOR);
+    fprintf(stderr, "Error: Failed to access directory '%s'\n", directory);
+    SetConsoleTextAttribute(hConsole, originalAttributes);
+    return;
+  }
+
+  // If verbose mode is enabled, print the directory we're processing
+  if (verbose) {
+    SetConsoleTextAttribute(hConsole, current_theme.SECONDARY_COLOR);
+    printf("\nDirectory: %s\n", directory);
+    SetConsoleTextAttribute(hConsole, originalAttributes);
+  }
+
+  // Process all files in the directory
+  do {
+    // Skip "." and ".." directories
+    if (strcmp(find_data.cFileName, ".") == 0 ||
+        strcmp(find_data.cFileName, "..") == 0) {
+      continue;
+    }
+
+    // Construct full path to the file/directory
+    char full_path[MAX_PATH];
+    snprintf(full_path, sizeof(full_path), "%s\\%s", directory,
+             find_data.cFileName);
+
+    if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+      // It's a directory - recurse if enabled
+      if (recursive) {
+        count_lines_in_directory(full_path, total_files, total_lines, recursive,
+                                 verbose, hConsole);
+      }
+    } else {
+      // It's a file - count lines if it's a source code file
+      if (is_source_code_file(find_data.cFileName)) {
+        unsigned long lines = count_lines_in_file(full_path);
+        (*total_files)++;
+        (*total_lines) += lines;
+
+        if (verbose) {
+          // Get file color based on extension
+          WORD fileColor = get_file_color(find_data.cFileName);
+
+          printf("  ");
+          SetConsoleTextAttribute(hConsole, fileColor);
+          printf("%-40s", find_data.cFileName);
+          SetConsoleTextAttribute(hConsole, originalAttributes);
+          printf(": ");
+          SetConsoleTextAttribute(hConsole, current_theme.ACCENT_COLOR);
+          printf("%lu lines\n", lines);
+          SetConsoleTextAttribute(hConsole, originalAttributes);
+        }
+      }
+    }
+  } while (FindNextFile(h_find, &find_data));
+
+  FindClose(h_find);
 }
 
 int lsh_exit(char **args) { return 0; }
