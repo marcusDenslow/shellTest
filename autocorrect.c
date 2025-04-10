@@ -5,6 +5,7 @@
 
 #include "autocorrect.h"
 #include "builtins.h"
+#include <winbase.h>
 
 /**
  * Calculate Levenshtein distance between two strings
@@ -151,46 +152,56 @@ int attempt_command_correction(char **args) {
     return 0;
   }
 
-  // Prepare the suggested command with all the original args
-  char suggested_cmd[1024] = "";
-  strcpy(suggested_cmd, suggestion);
+  // Get handle to console for colored output
+  HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  WORD originalAttributes;
 
-  for (int i = 1; args[i] != NULL; i++) {
-    strcat(suggested_cmd, " ");
-    strcat(suggested_cmd, args[i]);
+  // Get original console attributes to restore later
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  GetConsoleScreenBufferInfo(hConsole, &csbi);
+  originalAttributes = csbi.wAttributes;
+
+  // Reconstruct the original command line for display
+  char cmdLine[1024] = "";
+  for (int i = 0; args[i] != NULL; i++) {
+    if (i > 0)
+      strcat(cmdLine, " ");
+    strcat(cmdLine, args[i]);
   }
 
-  // Ask the user if they want to run the suggested command
-  printf("Command not found: '%s'. Did you mean '%s'? (y/n): ", args[0],
-         suggested_cmd);
+  // Print error message with command and visual indicator
+  fprintf(stderr, "Command not found:\n");
 
-  char response[10];
-  if (fgets(response, sizeof(response), stdin) == NULL ||
-      (response[0] != 'y' && response[0] != 'Y')) {
-    // User rejected suggestion
-    free(suggestion);
-    return 0;
+  // First line: show the full command
+  fprintf(stderr, "  %s\n", cmdLine);
+
+  // Second line: create an arrow pointing to the error
+  // Calculate the position for the arrow (include 2 spaces padding)
+  int arrowPos = 2;
+
+  // Create the arrow line with proper spacing
+  char arrowLine[1024] = "  ";
+  for (int i = 0; i < strlen(args[0]); i++) {
+    if (i == 0) {
+      strcat(arrowLine, "^");
+    } else {
+      strcat(arrowLine, "~");
+    }
   }
 
-  // Free the original suggestion, we don't need it anymore
+  // Print the arrow in red
+  SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_INTENSITY);
+  fprintf(stderr, "%s\n", arrowLine);
+
+  // Print suggestion in highlighted color
+  SetConsoleTextAttribute(hConsole, FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+  fprintf(stderr, "help: Did you mean '%s'?\n\n", suggestion);
+
+  // Reset color
+  SetConsoleTextAttribute(hConsole, originalAttributes);
+
+  // Free the suggestion
   free(suggestion);
 
-  // Parse and execute the suggested command
-  char *cmd_copy = _strdup(suggested_cmd);
-  if (cmd_copy == NULL) {
-    fprintf(stderr, "lsh: memory allocation error in autocorrect\n");
-    return 0;
-  }
-
-  // Parse the suggested command
-  char **corrected_args = lsh_split_line(cmd_copy);
-
-  // Execute the suggested command
-  int result = lsh_execute(corrected_args);
-
-  // Clean up
-  free(cmd_copy);
-  free(corrected_args);
-
-  return 1;
+  return 0; // Return 0 to continue with the shell loop
 }
