@@ -19,6 +19,7 @@
 #include <minwindef.h>
 #include <ole2.h>
 #include <olectl.h>
+#include <processenv.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <tlhelp32.h>
@@ -78,7 +79,7 @@ char *builtin_str[] = {
     "bookmark", "bookmarks", "goto",        "unbookmark",
     "weather",  "grep",      "cities",      "fzf",
     "ripgrep",  "clip",      "echo",        "self-destruct",
-    "theme",    "loc",
+    "theme",    "loc",       "gs",
 };
 
 // Add to the builtin_func array:
@@ -124,6 +125,7 @@ int (*builtin_func[])(char **) = {
     &lsh_self_destruct,
     &lsh_theme,
     &lsh_loc,
+    &lsh_git_status,
 };
 
 // Return the number of built-in commands
@@ -3807,6 +3809,244 @@ void count_lines_in_directory(const char *directory, unsigned long *total_files,
   } while (FindNextFile(h_find, &find_data));
 
   FindClose(h_find);
+}
+
+int lsh_git_status(char **args) {
+  // Check if we're in a git repository using existing function
+  char branch_name[128] = "";
+  int is_dirty = 0;
+  char repo_name[256] = "";
+  char repo_url[512] = "";
+  int ahead_count = 0;
+  int behind_count = 0;
+  int commit_count = 0;
+  FILE *fp;
+  char buffer[1024];
+
+  // Get handle to console for colored output
+  HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+
+  // Get original console attributes to restore later
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  GetConsoleScreenBufferInfo(hConsole, &csbi);
+  WORD originalAttributes = csbi.wAttributes;
+
+  // Check if we're in a git repo and get branch info
+  if (!get_git_branch(branch_name, sizeof(branch_name), &is_dirty)) {
+    SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_INTENSITY);
+    fprintf(stderr, "Not a git repository\n");
+    SetConsoleTextAttribute(hConsole, originalAttributes);
+    return 1;
+  }
+
+  // Get repository name
+  if (!get_git_repo_name(repo_name, sizeof(repo_name))) {
+    strcpy(repo_name, "Unknown");
+  }
+
+  // Get remote URL
+  fp = _popen("git config --get remote.origin.url 2>nul", "r");
+  if (fp && fgets(buffer, sizeof(buffer), fp)) {
+    // Remove newline
+    buffer[strcspn(buffer, "\n")] = 0;
+    strcpy(repo_url, buffer);
+  }
+  if (fp)
+    _pclose(fp);
+
+  // Get ahead/behind counts
+  fp =
+      _popen("git rev-list --left-right --count HEAD...@{upstream} 2>nul", "r");
+  if (fp && fgets(buffer, sizeof(buffer), fp)) {
+    // Parse ahead/behind counts
+    sscanf(buffer, "%d %d", &ahead_count, &behind_count);
+  }
+  if (fp)
+    _pclose(fp);
+
+  // Get total commit count
+  fp = _popen("git rev-list --count HEAD 2>nul", "r");
+  if (fp && fgets(buffer, sizeof(buffer), fp)) {
+    commit_count = atoi(buffer);
+  }
+  if (fp)
+    _pclose(fp);
+
+  // Display enhanced git status with color
+  printf("\n");
+
+  // Repository name and URL in bold/highlight
+  SetConsoleTextAttribute(hConsole, current_theme.HEADER_COLOR);
+  printf("=== Git Repository: ");
+  SetConsoleTextAttribute(hConsole, current_theme.DIRECTORY_COLOR);
+  printf("%s", repo_name);
+  SetConsoleTextAttribute(hConsole, current_theme.HEADER_COLOR);
+  printf(" ===\n\n");
+
+  // Reset to primary color
+  SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+
+  // Repository URL
+  if (strlen(repo_url) > 0) {
+    printf("  Remote URL: %s\n", repo_url);
+  } else {
+    printf("  Remote URL: Not configured\n");
+  }
+
+  // Branch information
+  printf("  Current branch: ");
+  SetConsoleTextAttribute(hConsole, current_theme.ACCENT_COLOR);
+  printf("%s\n", branch_name);
+  SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+
+  // Commit count
+  printf("  Total commits: %d\n", commit_count);
+
+  // Ahead/behind status
+  if (ahead_count > 0 || behind_count > 0) {
+    printf("  Sync status: ");
+    if (ahead_count > 0) {
+      SetConsoleTextAttribute(hConsole,
+                              FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+      printf("%d commit(s) ahead", ahead_count);
+      SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+    }
+    if (ahead_count > 0 && behind_count > 0) {
+      printf(" and ");
+    }
+    if (behind_count > 0) {
+      SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_INTENSITY);
+      printf("%d commit(s) behind", behind_count);
+      SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+    }
+    printf(" of origin/%s\n", branch_name);
+  } else if (strlen(repo_url) > 0) {
+    printf("  Sync status: ");
+    SetConsoleTextAttribute(hConsole, FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    printf("Up to date");
+    SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+    printf(" with origin/%s\n", branch_name);
+  } else {
+    printf("  Sync status: ");
+    printf("No remote configured\n");
+  }
+
+  // Working tree status
+  printf("  Working tree: ");
+  if (is_dirty) {
+    SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_INTENSITY);
+    printf("Changes detected");
+    SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+
+    // Get detailed status information
+    printf("\n\n  Modified files:\n");
+
+    fp = _popen("git status --porcelain 2>nul", "r");
+    if (fp) {
+      while (fgets(buffer, sizeof(buffer), fp)) {
+        // Remove newline
+        buffer[strcspn(buffer, "\n")] = 0;
+
+        char status_code[3] = {buffer[0], buffer[1], '\0'};
+        char *filename = buffer + 3;
+
+        // Color based on status
+        if (strcmp(status_code, "M ") == 0) {
+          SetConsoleTextAttribute(hConsole,
+                                  FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+          printf("    Modified (staged):   %s\n", filename);
+        } else if (strcmp(status_code, " M") == 0) {
+          SetConsoleTextAttribute(hConsole,
+                                  FOREGROUND_RED | FOREGROUND_INTENSITY);
+          printf("    Modified (unstaged): %s\n", filename);
+        } else if (strcmp(status_code, "A ") == 0) {
+          SetConsoleTextAttribute(hConsole,
+                                  FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+          printf("    Added (staged):      %s\n", filename);
+        } else if (strcmp(status_code, "D ") == 0) {
+          SetConsoleTextAttribute(hConsole,
+                                  FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+          printf("    Deleted (staged):    %s\n", filename);
+        } else if (strcmp(status_code, " D") == 0) {
+          SetConsoleTextAttribute(hConsole,
+                                  FOREGROUND_RED | FOREGROUND_INTENSITY);
+          printf("    Deleted (unstaged):  %s\n", filename);
+        } else if (strcmp(status_code, "??") == 0) {
+          SetConsoleTextAttribute(hConsole, current_theme.SECONDARY_COLOR);
+          printf("    Untracked:           %s\n", filename);
+        } else {
+          printf("    %s %s\n", status_code, filename);
+        }
+
+        SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+      }
+    }
+    if (fp)
+      _pclose(fp);
+  } else {
+    SetConsoleTextAttribute(hConsole, FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    printf("Clean");
+    SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+  }
+
+  printf("\n\n");
+
+  // Show the last few commits
+  printf("  Recent commits:\n");
+  fp = _popen("git log -5 --pretty=format:\"%%h - %%s (%%cr) <%%an>\" 2>nul",
+              "r");
+  if (fp) {
+    int commitNum = 0;
+    while (fgets(buffer, sizeof(buffer), fp)) {
+      // Remove newline
+      buffer[strcspn(buffer, "\n")] = 0;
+
+      // Extract hash to highlight it
+      char hash[10] = "";
+      strncpy(hash, buffer, 7);
+      hash[7] = '\0';
+
+      // Print with hash highlighted
+      SetConsoleTextAttribute(hConsole, current_theme.SECONDARY_COLOR);
+      printf("    %s", hash);
+      SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+      printf("%s\n", buffer + 7);
+
+      commitNum++;
+    }
+
+    // If no commits were read, fallback to a simpler command
+    if (commitNum == 0) {
+      _pclose(fp);
+      fp = _popen("git log -5 --oneline 2>nul", "r");
+      if (fp) {
+        while (fgets(buffer, sizeof(buffer), fp)) {
+          // Remove newline
+          buffer[strcspn(buffer, "\n")] = 0;
+
+          // Extract hash to highlight it (the first 7 chars)
+          char hash[10] = "";
+          strncpy(hash, buffer, 7);
+          hash[7] = '\0';
+
+          // Print with hash highlighted
+          SetConsoleTextAttribute(hConsole, current_theme.SECONDARY_COLOR);
+          printf("    %s", hash);
+          SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+          printf("%s\n", buffer + 7);
+        }
+      }
+    }
+  }
+  if (fp)
+    _pclose(fp);
+
+  printf("\n");
+
+  // Restore original text attributes
+  SetConsoleTextAttribute(hConsole, originalAttributes);
+
+  return 1;
 }
 
 int lsh_exit(char **args) { return 0; }
