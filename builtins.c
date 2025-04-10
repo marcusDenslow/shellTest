@@ -3991,53 +3991,71 @@ int lsh_git_status(char **args) {
 
   printf("\n\n");
 
-  // Show the last few commits
+  // Show the last few commits - using separate commands for different info
   printf("  Recent commits:\n");
-  fp = _popen("git log -5 --pretty=format:\"%%h - %%s (%%cr) <%%an>\" 2>nul",
-              "r");
+
+  // Get the basic commit info using --oneline which is more reliable
+  fp = _popen("git log -5 --oneline 2>nul", "r");
   if (fp) {
-    int commitNum = 0;
-    while (fgets(buffer, sizeof(buffer), fp)) {
+    int count = 0;
+    char commit_hashes[5][10]; // Store hashes for later lookup
+
+    while (fgets(buffer, sizeof(buffer), fp) && count < 5) {
       // Remove newline
       buffer[strcspn(buffer, "\n")] = 0;
 
-      // Extract hash to highlight it
-      char hash[10] = "";
-      strncpy(hash, buffer, 7);
-      hash[7] = '\0';
+      // Extract hash (first 7 characters)
+      strncpy(commit_hashes[count], buffer, 7);
+      commit_hashes[count][7] = '\0';
 
-      // Print with hash highlighted
+      // Extract message (everything after the first space)
+      char *message = strchr(buffer, ' ');
+      if (message)
+        message++;
+      else
+        message = "";
+
+      // Print hash with highlighting
       SetConsoleTextAttribute(hConsole, current_theme.SECONDARY_COLOR);
-      printf("    %s", hash);
+      printf("    %s", commit_hashes[count]);
       SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
-      printf("%s\n", buffer + 7);
+      printf(" %s", message);
 
-      commitNum++;
-    }
+      // Look up additional information for this commit
+      char cmd[256];
+      char time_buffer[128] = "";
+      char author_buffer[128] = "";
+      FILE *time_fp, *author_fp;
 
-    // If no commits were read, fallback to a simpler command
-    if (commitNum == 0) {
-      _pclose(fp);
-      fp = _popen("git log -5 --oneline 2>nul", "r");
-      if (fp) {
-        while (fgets(buffer, sizeof(buffer), fp)) {
-          // Remove newline
-          buffer[strcspn(buffer, "\n")] = 0;
-
-          // Extract hash to highlight it (the first 7 chars)
-          char hash[10] = "";
-          strncpy(hash, buffer, 7);
-          hash[7] = '\0';
-
-          // Print with hash highlighted
-          SetConsoleTextAttribute(hConsole, current_theme.SECONDARY_COLOR);
-          printf("    %s", hash);
-          SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
-          printf("%s\n", buffer + 7);
-        }
+      // Get relative time
+      sprintf(cmd, "git show -s --format=%%cr %s 2>nul", commit_hashes[count]);
+      time_fp = _popen(cmd, "r");
+      if (time_fp && fgets(time_buffer, sizeof(time_buffer), time_fp)) {
+        time_buffer[strcspn(time_buffer, "\n")] = 0;
+        printf(" (%s)", time_buffer);
+        _pclose(time_fp);
       }
+
+      // Get author
+      sprintf(cmd, "git show -s --format=%%an %s 2>nul", commit_hashes[count]);
+      author_fp = _popen(cmd, "r");
+      if (author_fp && fgets(author_buffer, sizeof(author_buffer), author_fp)) {
+        author_buffer[strcspn(author_buffer, "\n")] = 0;
+        printf(" <%s>", author_buffer);
+        _pclose(author_fp);
+      }
+
+      printf("\n");
+      count++;
     }
+
+    if (count == 0) {
+      printf("    No commits found\n");
+    }
+  } else {
+    printf("    Unable to retrieve commit history\n");
   }
+
   if (fp)
     _pclose(fp);
 
