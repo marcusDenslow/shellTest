@@ -7,6 +7,7 @@
 #include "common.h"
 #include "filters.h"
 #include "fzf_native.h"
+#include "git_integration.h"
 #include "grep.h"
 #include "persistent_history.h"
 #include "structured_data.h"
