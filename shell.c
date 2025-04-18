@@ -8,7 +8,9 @@
 #include "autocorrect.h"
 #include "bookmarks.h" // Added for bookmark support
 #include "builtins.h"
+#include "command_docs.h"
 #include "countdown_timer.h"
+#include "external_commands.h"
 #include "favorite_cities.h"
 #include "filters.h"
 #include "git_integration.h" // Added for Git repository detection

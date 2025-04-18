@@ -3,7 +3,9 @@
  * Entry point for the LSH shell program
  */
 
+#include "command_docs.h"
 #include "common.h"
+#include "external_commands.h"
 #include "shell.h"
 
 /**
@@ -16,24 +18,43 @@ int main(int argc, char **argv) {
   UINT oldCP = GetConsoleOutputCP();
   SetConsoleOutputCP(65001);
 
-  // Add theme to builtins arrays
-  // This is usually done in builtins.c before compilation
-  // But shown here for clarity of what needs to be added
-  /*
-  // In builtins.c:
-  char *builtin_str[] = {
-    // ... existing commands ...
-    "theme",
-  };
+  // Initialize external commands by scanning PATH
+  init_external_commands();
 
-  int (*builtin_func[])(char **) = {
-    // ... existing functions ...
-    &lsh_theme,
-  };
-  */
+  // Add some common commands that might not be in PATH but often exist
+  add_external_command("git");
+  add_external_command("npm");
+  add_external_command("node");
+  add_external_command("python");
+  add_external_command("python3");
+  add_external_command("pip");
+  add_external_command("lazygit");
+  add_external_command("neofetch");
+  add_external_command("docker");
+  add_external_command("kubectl");
+  add_external_command("vim");
+  add_external_command("nvim");
+  add_external_command("code"); // VSCode
+
+  // Initialize command documentation system
+  init_command_docs();
+
+  // Pre-load documentation for commonly used external commands
+  // This will make their documentation available immediately
+  load_command_doc("git");
+  load_command_doc("npm");
+  load_command_doc("python");
+  load_command_doc("lazygit");
+  load_command_doc("neofetch");
 
   // Start the shell loop
   lsh_loop();
+
+  // Clean up command documentation
+  cleanup_command_docs();
+
+  // Clean up external commands
+  cleanup_external_commands();
 
   // Restore the original code page (optional cleanup)
   SetConsoleOutputCP(oldCP);

@@ -4,6 +4,7 @@
  */
 
 #include "builtins.h"
+#include "command_docs.h"
 #include "common.h"
 #include "filters.h"
 #include "fzf_native.h"
@@ -2584,6 +2585,20 @@ int lsh_help(char **args) {
     originalAttrs = current_theme.PRIMARY_COLOR;
   }
 
+  // If a specific command was provided, show detailed help for it
+  if (args[1] != NULL) {
+    // Try to display help using the documentation system
+    if (display_command_help(args[1])) {
+      return 1;
+    }
+
+    // If command not found in documentation, show an error
+    SetConsoleTextAttribute(hConsole, current_theme.WARNING_COLOR);
+    printf("No help available for '%s'\n", args[1]);
+    SetConsoleTextAttribute(hConsole, originalAttrs);
+    return 1;
+  }
+
   // Use header color for title
   SetConsoleTextAttribute(hConsole, current_theme.HEADER_COLOR);
   printf("\nMarcus Denslow's LSH\n");
@@ -2596,8 +2611,8 @@ int lsh_help(char **args) {
   printf("Built-in commands:\n");
   SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
 
-  // Print commands in a nice colored grid
-  int columns = 4; // Number of columns to display
+  // Print commands in a nice colored grid with descriptions
+  int columns = 3; // Reduced number of columns to make room for descriptions
   int i = 0;
 
   while (i < lsh_num_builtins()) {
@@ -2606,16 +2621,45 @@ int lsh_help(char **args) {
 
     // Print up to 'columns' commands per row
     for (int col = 0; col < columns && i < lsh_num_builtins(); col++, i++) {
+      // Get documentation for this command
+      const CommandDoc *doc = get_command_doc(builtin_str[i]);
+
       // Use secondary color for command names
       SetConsoleTextAttribute(hConsole, current_theme.SECONDARY_COLOR);
       printf("%-15s", builtin_str[i]);
+
+      // If we have documentation, show the short description
+      if (doc && doc->short_desc) {
+        // Use a lighter color for description
+        SetConsoleTextAttribute(hConsole,
+                                FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+
+        // Truncate description if too long for display
+        char desc_buffer[50];
+        strncpy(desc_buffer, doc->short_desc, sizeof(desc_buffer) - 4);
+        desc_buffer[sizeof(desc_buffer) - 4] = '\0';
+
+        // Add ellipsis if truncated
+        if (strlen(doc->short_desc) > sizeof(desc_buffer) - 4) {
+          strcat(desc_buffer, "...");
+        }
+
+        printf(" - %s", desc_buffer);
+      }
+
       SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+
+      // Add spacing between command entries
+      if (col < columns - 1 && i + 1 < lsh_num_builtins()) {
+        printf("\n  ");
+      }
     }
     printf("\n");
   }
 
   printf("\n");
-  printf("Use the command for information on other programs.\n");
+  printf(
+      "Use 'help COMMAND' for detailed information on a specific command.\n");
   printf("Type 'theme list' to view available themes.\n\n");
 
   // Restore original attributes

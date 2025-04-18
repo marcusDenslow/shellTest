@@ -7,6 +7,8 @@
 #include "aliases.h" // Added for alias support
 #include "bookmarks.h"
 #include "builtins.h" // Added to access builtin_str[]
+#include "command_docs.h"
+#include "external_commands.h"
 #include "favorite_cities.h"
 #include "filters.h" // Added for filter commands
 #include "persistent_history.h"
@@ -721,7 +723,8 @@ char **find_matches(const char *partial_text, int is_first_word,
     return NULL;
   }
 
-  // If it's the first word, try to match against aliases and commands first
+  // If it's the first word, try to match against builtins, aliases, and
+  // external commands first
   if (is_first_word) {
     // First check aliases
     int alias_match_count = 0;
@@ -777,6 +780,40 @@ char **find_matches(const char *partial_text, int is_first_word,
         matches[*num_matches] = _strdup(builtin_str[i]);
         (*num_matches)++;
       }
+    }
+
+    // Then check external commands from PATH
+    int external_count = 0;
+    char **external_matches =
+        get_external_command_matches(partial_text, &external_count);
+
+    if (external_matches && external_count > 0) {
+      // Ensure we have enough capacity for all matches
+      if (*num_matches + external_count > matches_capacity) {
+        matches_capacity =
+            *num_matches + external_count + 10; // Add some extra space
+        matches = (char **)realloc(matches, sizeof(char *) * matches_capacity);
+        if (!matches) {
+          fprintf(stderr, "lsh: allocation error in tab completion\n");
+          for (int i = 0; i < external_count; i++) {
+            free(external_matches[i]);
+          }
+          free(external_matches);
+          return NULL;
+        }
+      }
+
+      // Add all external matches
+      for (int i = 0; i < external_count; i++) {
+        matches[*num_matches] = _strdup(external_matches[i]);
+        (*num_matches)++;
+      }
+
+      // Clean up external matches
+      for (int i = 0; i < external_count; i++) {
+        free(external_matches[i]);
+      }
+      free(external_matches);
     }
 
     // If we found matches, return them
@@ -848,7 +885,6 @@ char **find_matches(const char *partial_text, int is_first_word,
 
   return matches;
 }
-
 /**
  * Find context-aware suggestions based on the command hierarchy
  */
@@ -960,8 +996,6 @@ char **find_context_suggestions(const char *line, int position,
   // Default - suggest based on partial text
   return find_matches(ctx.current_token, ctx.token_index == 0, num_suggestions);
 }
-
-#include "bookmarks.h" // Added for bookmark support
 
 char **find_context_matches(const char *buffer, int position,
                             const char *partial_text, int *num_matches) {
@@ -1304,11 +1338,114 @@ char **find_context_matches(const char *buffer, int position,
     }
   }
 
-  // Default - suggest based on partial text - commands only if at beginning of
-  // line
+  // If this is the first word (command), include both built-in and external
+  // commands
+  if (position == strlen(partial_text)) {
+    // Count potential matches from all sources
+    int builtin_matches = 0;
+    int alias_matches = 0;
+    int external_matches = 0;
+
+    // Count built-in commands that match
+    for (int i = 0; i < lsh_num_builtins(); i++) {
+      if (_strnicmp(builtin_str[i], partial_text, strlen(partial_text)) == 0) {
+        builtin_matches++;
+      }
+    }
+
+    // Count matching aliases
+    int alias_count = 0;
+    char **alias_names = get_alias_names(&alias_count);
+    if (alias_names) {
+      for (int i = 0; i < alias_count; i++) {
+        if (_strnicmp(alias_names[i], partial_text, strlen(partial_text)) ==
+            0) {
+          alias_matches++;
+        }
+      }
+
+      // Free alias names as we just needed the count
+      for (int i = 0; i < alias_count; i++) {
+        free(alias_names[i]);
+      }
+      free(alias_names);
+    }
+
+    // Count matching external commands
+    char **ext_cmd_matches = NULL;
+    ext_cmd_matches =
+        get_external_command_matches(partial_text, &external_matches);
+    if (ext_cmd_matches) {
+      // Free the matches as we just needed the count
+      for (int i = 0; i < external_matches; i++) {
+        free(ext_cmd_matches[i]);
+      }
+      free(ext_cmd_matches);
+      ext_cmd_matches = NULL;
+    }
+
+    // If we have any matches, create an array for all of them
+    int total_matches = builtin_matches + alias_matches + external_matches;
+    if (total_matches > 0) {
+      char **matches = (char **)malloc(total_matches * sizeof(char *));
+      if (!matches) {
+        *num_matches = 0;
+        return NULL;
+      }
+
+      int match_idx = 0;
+
+      // Add built-in commands first
+      for (int i = 0; i < lsh_num_builtins(); i++) {
+        if (_strnicmp(builtin_str[i], partial_text, strlen(partial_text)) ==
+            0) {
+          matches[match_idx++] = _strdup(builtin_str[i]);
+        }
+      }
+
+      // Add aliases next
+      alias_names = get_alias_names(&alias_count);
+      if (alias_names) {
+        for (int i = 0; i < alias_count; i++) {
+          if (_strnicmp(alias_names[i], partial_text, strlen(partial_text)) ==
+              0) {
+            matches[match_idx++] = _strdup(alias_names[i]);
+          }
+        }
+
+        // Free alias names
+        for (int i = 0; i < alias_count; i++) {
+          free(alias_names[i]);
+        }
+        free(alias_names);
+      }
+
+      // Add external commands last
+      ext_cmd_matches =
+          get_external_command_matches(partial_text, &external_matches);
+      if (ext_cmd_matches) {
+        for (int i = 0; i < external_matches; i++) {
+          matches[match_idx++] = _strdup(ext_cmd_matches[i]);
+        }
+
+        // Free external command matches
+        for (int i = 0; i < external_matches; i++) {
+          free(ext_cmd_matches[i]);
+        }
+        free(ext_cmd_matches);
+      }
+
+      *num_matches = match_idx;
+      return matches;
+    }
+  }
+
+  // Default - suggest based on partial text (commands at beginning, files
+  // otherwise)
   return find_matches(partial_text, position == strlen(partial_text),
                       num_matches);
 }
+
 /**
  * Find directory matches for the given partial path
  * Used for cd command tab completion
@@ -1525,6 +1662,10 @@ char **find_file_matches(const char *partial_text, int *num_matches) {
 /**
  * Find the best match for current input
  */
+
+/**
+ * Find the best match for current input with improved external command support
+ */
 char *find_best_match(const char *partial_text) {
   // Start from the beginning of the current word
   int len = strlen(partial_text);
@@ -1551,7 +1692,28 @@ char *find_best_match(const char *partial_text) {
   // Check if this is the first word (command)
   int is_first_word = (word_start == 0);
 
-  // Find matches
+  // For commands (first word), first try external commands directly
+  if (is_first_word && strlen(partial_path) > 0) {
+    int external_count = 0;
+    char **external_matches =
+        get_external_command_matches(partial_path, &external_count);
+
+    if (external_matches && external_count > 0) {
+      // Create the full suggestion by combining the prefix with the matched
+      // path
+      char *full_suggestion = _strdup(external_matches[0]);
+
+      // Clean up external matches array
+      for (int i = 0; i < external_count; i++) {
+        free(external_matches[i]);
+      }
+      free(external_matches);
+
+      return full_suggestion;
+    }
+  }
+
+  // Find matches (builtins, aliases, files, etc.)
   int num_matches;
   char **matches = find_matches(partial_path, is_first_word, &num_matches);
 
@@ -1590,6 +1752,7 @@ char *find_best_match(const char *partial_text) {
  * Find context-aware best match for current input using the command registry
  * with frequency-based suggestions prioritized
  */
+
 char *find_context_best_match(const char *buffer, int position) {
   // If empty buffer, nothing to suggest
   if (position == 0)
@@ -1685,17 +1848,43 @@ char *find_context_best_match(const char *buffer, int position) {
     }
   }
 
-  // If it's a simple command (no pipe), try frequency-based suggestions
+  // If it's a simple command (no pipe), try frequency-based suggestions first
   if (!has_pipe && !is_argument) {
     char *freq_suggestion = find_best_frequency_match(buffer);
     if (freq_suggestion) {
       return freq_suggestion;
+    }
+
+    // If no frequency suggestion and we're at first word, try external commands
+    if (word_start == 0 && strlen(currentWord) > 0) {
+      // Get matching external commands
+      int num_matches = 0;
+      char **matches = get_external_command_matches(currentWord, &num_matches);
+
+      if (matches && num_matches > 0) {
+        // Return the first match
+        char *suggestion = _strdup(matches[0]);
+
+        // Clean up matches
+        for (int i = 0; i < num_matches; i++) {
+          free(matches[i]);
+        }
+        free(matches);
+
+        return suggestion;
+      }
+
+      // Free matches if we found none
+      if (matches) {
+        free(matches);
+      }
     }
   }
 
   // Fall back to the original suggestion logic for other cases
   return find_best_match(buffer);
 }
+
 /**
  * Prepare an entire screen line in a buffer before displaying
  */
@@ -1728,6 +1917,10 @@ void prepare_display_buffer(char *displayBuffer, const char *original_line,
 /**
  * Redraw tab suggestion without flickering
  */
+
+/**
+ * Redraw tab suggestion without flickering
+ */
 void redraw_tab_suggestion(HANDLE hConsole, COORD promptEndPos,
                            char *original_line, char *tab_match,
                            char *last_tab_prefix, int tab_index,
@@ -1735,6 +1928,12 @@ void redraw_tab_suggestion(HANDLE hConsole, COORD promptEndPos,
   CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
   DWORD numCharsWritten;
   char displayBuffer[2048] = "";
+  char indicatorBuffer[20] = ""; // Define this variable
+
+  // Format the indicator buffer here so it's available for later use
+  if (tab_num_matches > 1) {
+    sprintf(indicatorBuffer, " (%d/%d)", tab_index + 1, tab_num_matches);
+  }
 
   // Prepare the entire line in memory before displaying anything
   prepare_display_buffer(displayBuffer, original_line, tab_match,
@@ -1784,10 +1983,56 @@ void redraw_tab_suggestion(HANDLE hConsole, COORD promptEndPos,
 
   // Write the indicator with gray attributes
   if (tab_num_matches > 1) {
-    char indicatorBuffer[20];
-    sprintf(indicatorBuffer, " (%d/%d)", tab_index + 1, tab_num_matches);
     WriteConsole(hConsole, indicatorBuffer, strlen(indicatorBuffer),
                  &numCharsWritten, NULL);
+  }
+
+  // Add command description if available
+  // Extract just the command without arguments
+  char cmd[64] = "";
+  int i = 0;
+  while (tab_match[i] && !isspace(tab_match[i]) && i < sizeof(cmd) - 1) {
+    cmd[i] = tab_match[i];
+    i++;
+  }
+  cmd[i] = '\0';
+
+  // Get command documentation if this is the first word
+  if (original_line[0] == '\0') {
+    const CommandDoc *doc = get_command_doc(cmd);
+    if (doc && doc->short_desc) {
+      // Get console dimensions to make sure description fits
+      GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
+      int console_width = consoleInfo.dwSize.X;
+      int current_pos = endOfSuggestionPos.X;
+
+      // Calculate available space for description
+      int available_space = console_width - current_pos - 5; // 5 char margin
+
+      if (available_space > 10) { // Only show if we have reasonable space
+        // Move to position for description
+        COORD descPos = endOfSuggestionPos;
+        descPos.X += tab_num_matches > 1 ? strlen(indicatorBuffer) + 2 : 2;
+        SetConsoleCursorPosition(hConsole, descPos);
+
+        // Prepare truncated description if needed
+        char desc_buffer[256];
+        strncpy(desc_buffer, doc->short_desc, sizeof(desc_buffer) - 4);
+        desc_buffer[sizeof(desc_buffer) - 4] = '\0';
+
+        // Add ellipsis if truncated
+        if (strlen(doc->short_desc) > sizeof(desc_buffer) - 4) {
+          int end = sizeof(desc_buffer) - 4;
+          strcpy(desc_buffer + end, "...");
+        }
+
+        // Write description with different color
+        SetConsoleTextAttribute(hConsole,
+                                FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+        WriteConsole(hConsole, desc_buffer, strlen(desc_buffer),
+                     &numCharsWritten, NULL);
+      }
+    }
   }
 
   // Reset text attributes
@@ -1905,11 +2150,6 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
                             : // Light gray for history suggestions
           FOREGROUND_BLUE;    // Dark blue for normal suggestions
 
-  // Instead of using WriteConsole (which moves the cursor), use the direct
-  // output functions:
-  // 1. WriteConsoleOutputCharacter - writes text without moving cursor
-  // 2. FillConsoleOutputAttribute - sets text color without moving cursor
-
   // Write the suggestion characters
   DWORD charsWritten;
   WriteConsoleOutputCharacter(hConsole, suggestionText, strlen(suggestionText),
@@ -1920,13 +2160,67 @@ void display_suggestion_atomically(HANDLE hConsole, COORD promptEndPos,
   FillConsoleOutputAttribute(hConsole, suggestionColor, strlen(suggestionText),
                              csbi.dwCursorPosition, &attrsWritten);
 
-  // No need to reset cursor position since it didn't move
+  // Add documentation if this is a command suggestion at start of line
+  if (!is_history_suggestion && word_start == 0 && strlen(suggestionText) > 0) {
+    // Extract just the command without arguments
+    char suggested_cmd[64] = "";
+    int i = 0;
+    while (suggestionText[i] && !isspace(suggestionText[i]) &&
+           i < sizeof(suggested_cmd) - 1) {
+      suggested_cmd[i] = suggestionText[i];
+      i++;
+    }
+    suggested_cmd[i] = '\0';
+
+    // Combine with what the user already typed
+    char full_cmd[64] = "";
+    strcpy(full_cmd, currentWord);
+    strcat(full_cmd, suggested_cmd);
+
+    // Get documentation for the command
+    const CommandDoc *doc = get_command_doc(full_cmd);
+    if (doc && doc->short_desc) {
+      // Get console dimensions
+      int console_width = csbi.dwSize.X;
+
+      // Calculate position for description
+      COORD descPos = csbi.dwCursorPosition;
+      descPos.X += strlen(suggestionText) + 2; // 2 spaces after suggestion
+
+      // Check if we have space for description
+      int available_space = console_width - descPos.X - 5; // 5 char margin
+
+      if (available_space > 10) { // Only show if we have reasonable space
+        // Prepare truncated description if needed
+        char desc_buffer[256] = "";
+        strncpy(desc_buffer, doc->short_desc, available_space);
+        desc_buffer[available_space] = '\0';
+
+        // Add ellipsis if truncated
+        if (strlen(doc->short_desc) > available_space) {
+          int end = available_space - 3;
+          if (end > 0) {
+            desc_buffer[end] = '.';
+            desc_buffer[end + 1] = '.';
+            desc_buffer[end + 2] = '.';
+            desc_buffer[end + 3] = '\0';
+          }
+        }
+
+        // Write description with a light green color
+        WORD descColor = FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+        WriteConsoleOutputCharacter(hConsole, desc_buffer, strlen(desc_buffer),
+                                    descPos, &charsWritten);
+        FillConsoleOutputAttribute(hConsole, descColor, strlen(desc_buffer),
+                                   descPos, &attrsWritten);
+      }
+    }
+  }
 
   // Restore cursor visibility
   cursorInfo.bVisible = originalCursorVisible;
   SetConsoleCursorInfo(hConsole, &cursorInfo);
 }
-
 /**
  * Register a command with its argument type for tab completion
  */

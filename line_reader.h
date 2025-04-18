@@ -10,14 +10,16 @@
 
 /**
  * Read a line of input from the user with tab completion
- * 
+ *
  * @return The line read from stdin (must be freed by caller)
  */
 char *lsh_read_line(void);
-
+int is_valid_command(const char *cmd);
+void colorize_command(HANDLE hConsole, COORD promptEndPos, const char *buffer,
+                      int position, WORD originalAttributes);
 /**
  * Split a line into tokens
- * 
+ *
  * @param line The line to split
  * @return An array of tokens (must be freed by caller)
  */
@@ -25,7 +27,7 @@ char **lsh_split_line(char *line);
 
 /**
  * Split a line into commands separated by pipes
- * 
+ *
  * @param line The line to split
  * @return A NULL-terminated array of command token arrays
  */

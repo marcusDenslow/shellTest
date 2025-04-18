@@ -6,8 +6,11 @@
 #include "line_reader.h"
 #include "bookmarks.h" // Added for bookmark support
 #include "builtins.h"  // Added for history access
+#include "command_docs.h"
+#include "external_commands.h"
 #include "persistent_history.h"
 #include "tab_complete.h"
+#include "themes.h"
 
 // Define key codes
 #define KEY_BACKSPACE 8
@@ -115,6 +118,10 @@ char *lsh_read_line(void) {
   // Apply new console mode
   SetConsoleMode(hStdin, newMode);
 
+  // Initial colorization of empty buffer
+  colorize_command(hConsole, promptEndPos, buffer, position,
+                   originalAttributes);
+
   // Main input loop
   int c;
   int done = 0;
@@ -146,89 +153,178 @@ char *lsh_read_line(void) {
     if (!tab_matches && !ready_to_execute && position == strlen(buffer)) {
       buffer[position] = '\0'; // Ensure buffer is null-terminated
 
-      // Try to find frequency-based suggestions first
-      int freq_suggestions_count = 0;
-      char **freq_suggestions = NULL;
+      // Only try suggestions if at beginning of line or just after a pipe
+      int show_suggestions = 1;
+      int cmd_start = 0;
 
-      // Only try frequency suggestions if we have at least a few characters
-      // typed
-      if (strlen(buffer) >= 2) {
-        freq_suggestions =
-            get_frequency_suggestions(buffer, &freq_suggestions_count);
+      // Check if we're at a position where command suggestions make sense
+      // (at start of line or after a pipe)
+      if (position > 0) {
+        // Find start of current command context
+        int i = position - 1;
+        while (i >= 0) {
+          if (buffer[i] == '|') {
+            cmd_start = i + 1;
+            // Skip spaces after pipe
+            while (cmd_start < position && isspace(buffer[cmd_start])) {
+              cmd_start++;
+            }
+            break;
+          }
+          i--;
+        }
+
+        // Extract just what we've typed in this command context
+        char current_cmd[1024] = "";
+        if (position > cmd_start) {
+          strncpy(current_cmd, buffer + cmd_start, position - cmd_start);
+          current_cmd[position - cmd_start] = '\0';
+        }
+
+        // Check if we're typing a command (no spaces yet)
+        if (strchr(current_cmd, ' ') == NULL) {
+          // We're potentially typing a command name - specifically try external
+          // commands
+          int external_count = 0;
+          char **external_matches = NULL;
+
+          // Only try if we have at least one character
+          if (strlen(current_cmd) > 0) {
+            external_matches =
+                get_external_command_matches(current_cmd, &external_count);
+          }
+
+          if (external_matches && external_count > 0) {
+            // Use the first external match
+            suggestion = _strdup(external_matches[0]);
+
+            // Get current cursor position
+            GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
+
+            // Set text color to gray for suggestion
+            SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
+
+            // Calculate and display the part of suggestion not yet typed
+            const char *completion = suggestion + strlen(current_cmd);
+            if (completion && *completion) {
+              printf("%s", completion);
+              // Reset cursor position
+              SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
+              showing_suggestion = 1;
+              showing_history_suggestion = 0; // External command suggestion
+            }
+
+            // Reset color
+            SetConsoleTextAttribute(hConsole, originalAttributes);
+
+            // Free external matches
+            for (int i = 0; i < external_count; i++) {
+              free(external_matches[i]);
+            }
+            free(external_matches);
+            external_matches = NULL; // Set to NULL to prevent double free
+
+            // If we found an external command suggestion, don't try other
+            // suggestion types
+            show_suggestions = 0;
+          } else if (external_matches) {
+            // Free matches if we found none
+            free(external_matches);
+            external_matches = NULL; // Set to NULL to prevent double free
+          }
+        }
       }
 
-      if (freq_suggestions && freq_suggestions_count > 0) {
-        // Use the highest frequency suggestion
-        suggestion = freq_suggestions[0];
+      // Continue with standard suggestion logic if we didn't find an external
+      // command
+      if (show_suggestions) {
+        // Try to find frequency-based suggestions first
+        int freq_suggestions_count = 0;
+        char **freq_suggestions = NULL;
 
-        // Get current cursor position
-        GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
-
-        // Set text color to gray for suggestion
-        SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
-
-        // Calculate and display the part of suggestion not yet typed
-        const char *completion = suggestion + strlen(buffer);
-        if (completion && *completion) {
-          printf("%s", completion);
-          // Reset cursor position
-          SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
-          showing_suggestion = 1;
-          showing_history_suggestion = 1; // This is a history-based suggestion
+        // Only try frequency suggestions if we have at least a few characters
+        // typed
+        if (strlen(buffer) >= 2) {
+          freq_suggestions =
+              get_frequency_suggestions(buffer, &freq_suggestions_count);
         }
 
-        // Reset color
-        SetConsoleTextAttribute(hConsole, originalAttributes);
+        if (freq_suggestions && freq_suggestions_count > 0) {
+          // Use the highest frequency suggestion
+          suggestion = freq_suggestions[0];
 
-        // Free all but the first suggestion which is now stored in 'suggestion'
-        for (int i = 1; i < freq_suggestions_count; i++) {
-          free(freq_suggestions[i]);
-        }
-        free(freq_suggestions);
-      } else {
-        // Fall back to context-aware best match
-        suggestion = find_context_best_match(buffer, position);
-
-        if (suggestion) {
           // Get current cursor position
           GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
 
-          // Find the start of the current word
-          int word_start = position - 1;
-          while (word_start >= 0 && buffer[word_start] != ' ' &&
-                 buffer[word_start] != '\\' && buffer[word_start] != '|') {
-            word_start--;
-          }
-          word_start++; // Move past the space, backslash, or pipe
+          // Set text color to gray for suggestion
+          SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
 
-          // Extract just the last word from the suggested path
-          const char *lastWord = strrchr(suggestion, ' ');
-          if (lastWord) {
-            lastWord++; // Move past the space
-          } else {
-            lastWord = suggestion;
-          }
-
-          // Extract just the last word from what we've typed so far
-          char currentWord[1024] = "";
-          strncpy(currentWord, buffer + word_start, position - word_start);
-          currentWord[position - word_start] = '\0';
-
-          // Only display the suggestion if it starts with what we're typing
-          // (case insensitive) and hasn't been completely typed already
-          if (_strnicmp(lastWord, currentWord, strlen(currentWord)) == 0 &&
-              _stricmp(lastWord, currentWord) != 0) {
-            // Set text color to gray for suggestion
-            SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
-            // Print only the part of the suggestion that hasn't been typed yet
-            printf("%s", lastWord + strlen(currentWord));
-            // Reset color
-            SetConsoleTextAttribute(hConsole, originalAttributes);
+          // Calculate and display the part of suggestion not yet typed
+          const char *completion = suggestion + strlen(buffer);
+          if (completion && *completion) {
+            printf("%s", completion);
             // Reset cursor position
             SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
             showing_suggestion = 1;
             showing_history_suggestion =
-                0; // This is a command/file suggestion, not history
+                1; // This is a history-based suggestion
+          }
+
+          // Reset color
+          SetConsoleTextAttribute(hConsole, originalAttributes);
+
+          // Free all but the first suggestion which is now stored in
+          // 'suggestion'
+          for (int i = 1; i < freq_suggestions_count; i++) {
+            free(freq_suggestions[i]);
+          }
+          free(freq_suggestions);
+        } else {
+          // Fall back to context-aware best match
+          suggestion = find_context_best_match(buffer, position);
+
+          if (suggestion) {
+            // Get current cursor position
+            GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
+
+            // Find the start of the current word
+            int word_start = position - 1;
+            while (word_start >= 0 && buffer[word_start] != ' ' &&
+                   buffer[word_start] != '\\' && buffer[word_start] != '|') {
+              word_start--;
+            }
+            word_start++; // Move past the space, backslash, or pipe
+
+            // Extract just the last word from the suggested path
+            const char *lastWord = strrchr(suggestion, ' ');
+            if (lastWord) {
+              lastWord++; // Move past the space
+            } else {
+              lastWord = suggestion;
+            }
+
+            // Extract just the last word from what we've typed so far
+            char currentWord[1024] = "";
+            strncpy(currentWord, buffer + word_start, position - word_start);
+            currentWord[position - word_start] = '\0';
+
+            // Only display the suggestion if it starts with what we're typing
+            // (case insensitive) and hasn't been completely typed already
+            if (_strnicmp(lastWord, currentWord, strlen(currentWord)) == 0 &&
+                _stricmp(lastWord, currentWord) != 0) {
+              // Set text color to gray for suggestion
+              SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
+              // Print only the part of the suggestion that hasn't been typed
+              // yet
+              printf("%s", lastWord + strlen(currentWord));
+              // Reset color
+              SetConsoleTextAttribute(hConsole, originalAttributes);
+              // Reset cursor position
+              SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
+              showing_suggestion = 1;
+              showing_history_suggestion =
+                  0; // This is a command/file suggestion, not history
+            }
           }
         }
       }
@@ -349,6 +445,10 @@ char *lsh_read_line(void) {
           // Display the command
           printf("%s", buffer);
 
+          // Add colorization of the command
+          colorize_command(hConsole, promptEndPos, buffer, position,
+                           originalAttributes);
+
           // Show cursor again
           cursorInfo.bVisible = originalCursorVisible;
           SetConsoleCursorInfo(hConsole, &cursorInfo);
@@ -410,6 +510,10 @@ char *lsh_read_line(void) {
           // Display the command
           printf("%s", buffer);
 
+          // Add colorization of the command
+          colorize_command(hConsole, promptEndPos, buffer, position,
+                           originalAttributes);
+
           // Show cursor again
           cursorInfo.bVisible = originalCursorVisible;
           SetConsoleCursorInfo(hConsole, &cursorInfo);
@@ -439,6 +543,10 @@ char *lsh_read_line(void) {
 
           // Display the original input
           printf("%s", buffer);
+
+          // Add colorization of the command
+          colorize_command(hConsole, promptEndPos, buffer, position,
+                           originalAttributes);
 
           // Show cursor again
           cursorInfo.bVisible = originalCursorVisible;
@@ -478,6 +586,10 @@ char *lsh_read_line(void) {
         // Print the full command
         buffer[position] = '\0';
         WriteConsole(hConsole, buffer, strlen(buffer), &numCharsWritten, NULL);
+
+        // Add colorization of the command
+        colorize_command(hConsole, promptEndPos, buffer, position,
+                         originalAttributes);
 
         // Restore cursor visibility
         cursorInfo.bVisible = originalCursorVisible;
@@ -622,6 +734,10 @@ char *lsh_read_line(void) {
         buffer[position] = '\0';
         WriteConsole(hConsole, buffer, strlen(buffer), &numCharsWritten, NULL);
 
+        // Add colorization of the command
+        colorize_command(hConsole, promptEndPos, buffer, position,
+                         originalAttributes);
+
         // Restore cursor visibility
         cursorInfo.bVisible = originalCursorVisible;
         SetConsoleCursorInfo(hConsole, &cursorInfo);
@@ -734,6 +850,10 @@ char *lsh_read_line(void) {
             // Restore cursor visibility
             cursorInfo.bVisible = originalCursorVisible;
             SetConsoleCursorInfo(hConsole, &cursorInfo);
+
+            // Add colorization of the command
+            colorize_command(hConsole, promptEndPos, buffer, position,
+                             originalAttributes);
           }
         }
         // Handle backspace differently when in tab cycling mode
@@ -759,6 +879,10 @@ char *lsh_read_line(void) {
           // Print the original input
           printf("%s", buffer);
 
+          // Add colorization of the command
+          colorize_command(hConsole, promptEndPos, buffer, position,
+                           originalAttributes);
+
           // Reset tab cycling
           for (int i = 0; i < tab_num_matches; i++) {
             free(tab_matches[i]);
@@ -773,6 +897,10 @@ char *lsh_read_line(void) {
           position--;
           printf("\b \b"); // Move back, erase, move back
           buffer[position] = '\0';
+
+          // Add colorization of the command
+          colorize_command(hConsole, promptEndPos, buffer, position,
+                           originalAttributes);
         } else {
           // Backspace in middle of line
           // Get current cursor position
@@ -810,6 +938,10 @@ char *lsh_read_line(void) {
           // Restore cursor visibility
           cursorInfo.bVisible = originalCursorVisible;
           SetConsoleCursorInfo(hConsole, &cursorInfo);
+
+          // Add colorization of the command
+          colorize_command(hConsole, promptEndPos, buffer, position,
+                           originalAttributes);
         }
 
         // Reset execution flag when editing
@@ -829,6 +961,11 @@ char *lsh_read_line(void) {
                                   originalAttributes)) {
         // Update position to end of the completed bookmark
         position = strlen(buffer);
+
+        // Add colorization of the command
+        colorize_command(hConsole, promptEndPos, buffer, position,
+                         originalAttributes);
+
         continue;
       }
 
@@ -872,6 +1009,10 @@ char *lsh_read_line(void) {
         // Move back to beginning of line and display buffer
         SetConsoleCursorPosition(hConsole, promptEndPos);
         printf("%s", buffer);
+
+        // Add colorization of the command
+        colorize_command(hConsole, promptEndPos, buffer, position,
+                         originalAttributes);
 
         // Free suggestion
         free(suggestion);
@@ -949,6 +1090,10 @@ char *lsh_read_line(void) {
                             tab_matches[tab_index], last_tab_prefix, tab_index,
                             tab_num_matches, originalAttributes);
 
+      // Add colorization of the command
+      colorize_command(hConsole, promptEndPos, buffer, position,
+                       originalAttributes);
+
       // Reset execution flag when using Tab
       ready_to_execute = 0;
 
@@ -964,6 +1109,10 @@ char *lsh_read_line(void) {
         position++;
         buffer[position] = '\0';
         putchar(c); // Echo character
+
+        // Add colorization of the command
+        colorize_command(hConsole, promptEndPos, buffer, position,
+                         originalAttributes);
       } else {
         // Cursor in middle of line - insert character
 
@@ -995,6 +1144,10 @@ char *lsh_read_line(void) {
         // Restore cursor visibility
         cursorInfo.bVisible = originalCursorVisible;
         SetConsoleCursorInfo(hConsole, &cursorInfo);
+
+        // Add colorization of the command
+        colorize_command(hConsole, promptEndPos, buffer, position,
+                         originalAttributes);
       }
 
       // Reset execution flag when editing
@@ -1131,4 +1284,108 @@ char ***lsh_split_commands(char *line) {
 
   free(line_copy);
   return commands;
+}
+
+int is_valid_command(const char *cmd) {
+  if (!cmd || cmd[0] == '\0')
+    return 0;
+
+  // Check if it's a builtin command
+  for (int i = 0; i < lsh_num_builtins(); i++) {
+    if (strcasecmp(cmd, builtin_str[i]) == 0) {
+      return 1; // It's a valid builtin command
+    }
+  }
+
+  // Check if it's an alias
+  AliasEntry *alias = find_alias(cmd);
+  if (alias) {
+    return 1; // It's a valid alias
+  }
+
+  // Check if it's an external command in PATH
+  if (is_external_command(cmd)) {
+    return 1; // It's a valid external command
+  }
+
+  return 0; // Not a valid command
+}
+
+/**
+ * Recolor the command portion of the input line
+ * @param hConsole Console handle
+ * @param promptEndPos Position right after the prompt
+ * @param buffer Current input buffer
+ * @param position Cursor position in buffer
+ * @param originalAttributes Original text attributes to restore
+ */
+void colorize_command(HANDLE hConsole, COORD promptEndPos, const char *buffer,
+                      int position, WORD originalAttributes) {
+  // If buffer is empty, nothing to do
+  if (!buffer || buffer[0] == '\0')
+    return;
+
+  // Save current console state
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  if (!GetConsoleScreenBufferInfo(hConsole, &csbi))
+    return;
+  COORD originalPos = csbi.dwCursorPosition;
+
+  // Extract the first word (command)
+  char cmd[256] = "";
+  int cmd_end = 0;
+  while (buffer[cmd_end] && !isspace(buffer[cmd_end]) &&
+         cmd_end < sizeof(cmd) - 1) {
+    cmd[cmd_end] = buffer[cmd_end];
+    cmd_end++;
+  }
+  cmd[cmd_end] = '\0';
+
+  // Only proceed if we have a command to check
+  if (cmd_end > 0) {
+    // Hide cursor during operation
+    CONSOLE_CURSOR_INFO cursorInfo;
+    GetConsoleCursorInfo(hConsole, &cursorInfo);
+    BOOL originalCursorVisible = cursorInfo.bVisible;
+    cursorInfo.bVisible = FALSE;
+    SetConsoleCursorInfo(hConsole, &cursorInfo);
+
+    // Check if it's valid
+    int isValid = is_valid_command(cmd);
+
+    // Move to start of command (prompt end position)
+    SetConsoleCursorPosition(hConsole, promptEndPos);
+
+    // Set appropriate color
+    if (isValid) {
+      // Use soft blue for valid commands
+      SetConsoleTextAttribute(hConsole, current_theme.SECONDARY_COLOR);
+    } else {
+      // Use soft red for invalid commands
+      SetConsoleTextAttribute(hConsole, current_theme.WARNING_COLOR);
+    }
+
+    // Write only the command portion with color
+    DWORD written;
+    WriteConsole(hConsole, cmd, cmd_end, &written, NULL);
+
+    // Restore original text attributes
+    SetConsoleTextAttribute(hConsole, originalAttributes);
+
+    // If there are arguments, need to write them with original color
+    if (cmd_end < strlen(buffer)) {
+      COORD argStart = promptEndPos;
+      argStart.X += cmd_end;
+      SetConsoleCursorPosition(hConsole, argStart);
+      WriteConsole(hConsole, buffer + cmd_end, strlen(buffer) - cmd_end,
+                   &written, NULL);
+    }
+
+    // Restore cursor position
+    SetConsoleCursorPosition(hConsole, originalPos);
+
+    // Restore cursor visibility
+    cursorInfo.bVisible = originalCursorVisible;
+    SetConsoleCursorInfo(hConsole, &cursorInfo);
+  }
 }

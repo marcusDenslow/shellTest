@@ -4,6 +4,8 @@
  */
 
 #include "persistent_history.h"
+#include "command_docs.h"
+#include "external_commands.h"
 #include <direct.h> // For _getcwd
 #include <shlobj.h> // For SHGetFolderPath
 
@@ -552,124 +554,164 @@ PersistentHistoryEntry *get_history_entry(int index) {
  * Put this in persistent_history.c to ensure the function signature matches the
  * usage This can replace the existing function if there's a mismatch
  */
-char **get_frequency_suggestions(const char *prefix, int *num_suggestions) {
-  if (!prefix || !command_frequencies) {
-    *num_suggestions = 0;
+/**
+ * Get suggestions based on command frequency with external commands support
+ *
+ * @param prefix The prefix to match against
+ * @param count Pointer to store the number of suggestions
+ * @return Array of suggestions (caller must free)
+ */
+char **get_frequency_suggestions(const char *prefix, int *count) {
+  *count = 0;
+  if (!prefix || prefix[0] == '\0')
     return NULL;
-  }
 
-  // Require at least 1 character (changed from 2)
-  if (strlen(prefix) < 1) {
-    *num_suggestions = 0;
+  // Get all persistent history entries
+  int history_count = get_history_count();
+  if (history_count == 0)
     return NULL;
-  }
 
-  // Create a temporary array to track matches and their frequencies
+  // Frequency counter for commands
   typedef struct {
     char *command;
-    int count;
-    int is_exact_match; // Flag for exact prefix matches vs. substring matches
-  } SuggestionMatch;
+    int frequency;
+  } CommandFrequency;
 
-  // Count potential matches
-  int max_suggestions = 0;
-  for (int i = 0; i < frequency_count; i++) {
-    if (command_frequencies[i].command) {
-      // Check if command starts with the prefix (case insensitive)
-      if (_strnicmp(command_frequencies[i].command, prefix, strlen(prefix)) ==
-          0) {
-        max_suggestions++;
-      }
-      // Also include commands that contain the prefix as a substring
-      else if (strlen(prefix) >= 3 && // Only for prefixes of reasonable length
-               _stristr(command_frequencies[i].command, prefix) != NULL) {
-        max_suggestions++;
-      }
-    }
-  }
+  // Count frequencies
+  CommandFrequency *frequencies = NULL;
+  int freq_count = 0;
+  int freq_capacity = 10;
 
-  if (max_suggestions == 0) {
-    *num_suggestions = 0;
+  frequencies =
+      (CommandFrequency *)malloc(freq_capacity * sizeof(CommandFrequency));
+  if (!frequencies)
     return NULL;
-  }
 
-  // Allocate temporary match array
-  SuggestionMatch *matches =
-      (SuggestionMatch *)malloc(max_suggestions * sizeof(SuggestionMatch));
-  if (!matches) {
-    fprintf(stderr, "Failed to allocate memory for suggestion matches\n");
-    *num_suggestions = 0;
-    return NULL;
-  }
+  // Process history entries
+  for (int i = 0; i < history_count; i++) {
+    PersistentHistoryEntry *entry = get_history_entry(i);
+    if (entry && entry->command) {
+      // Extract first word (the command)
+      char cmd[256] = "";
+      int cmd_len = 0;
+      int j = 0;
 
-  // Fill the matches array
-  int match_count = 0;
-  for (int i = 0; i < frequency_count; i++) {
-    if (command_frequencies[i].command) {
-      // Check for exact prefix match
-      if (_strnicmp(command_frequencies[i].command, prefix, strlen(prefix)) ==
-          0) {
-        matches[match_count].command = command_frequencies[i].command;
-        matches[match_count].count = command_frequencies[i].count;
-        matches[match_count].is_exact_match = 1;
-        match_count++;
+      // Skip leading whitespace
+      while (entry->command[j] && isspace(entry->command[j]))
+        j++;
+
+      // Copy command name until space or end
+      while (entry->command[j] && !isspace(entry->command[j]) &&
+             cmd_len < sizeof(cmd) - 1) {
+        cmd[cmd_len++] = entry->command[j++];
       }
-      // Check for substring match
-      else if (strlen(prefix) >= 3 &&
-               _stristr(command_frequencies[i].command, prefix) != NULL) {
-        matches[match_count].command = command_frequencies[i].command;
-        matches[match_count].count = command_frequencies[i].count;
-        matches[match_count].is_exact_match = 0;
-        match_count++;
-      }
-    }
-  }
+      cmd[cmd_len] = '\0';
 
-  // Sort matches by:
-  // 1. Exact match vs. substring match
-  // 2. Frequency count
-  for (int i = 0; i < match_count - 1; i++) {
-    for (int j = 0; j < match_count - i - 1; j++) {
-      // If one is exact and one isn't, exact match wins
-      if (matches[j].is_exact_match != matches[j + 1].is_exact_match) {
-        if (matches[j + 1].is_exact_match) {
-          // Swap if j+1 is exact but j is not
-          SuggestionMatch temp = matches[j];
-          matches[j] = matches[j + 1];
-          matches[j + 1] = temp;
+      // Skip if empty
+      if (cmd_len == 0)
+        continue;
+
+      // Check if it starts with our prefix
+      if (_strnicmp(cmd, prefix, strlen(prefix)) != 0)
+        continue;
+
+      // Check if we already have this command
+      int found = 0;
+      for (int k = 0; k < freq_count; k++) {
+        if (strcasecmp(frequencies[k].command, cmd) == 0) {
+          frequencies[k].frequency++;
+          found = 1;
+          break;
         }
       }
-      // If both same type, sort by frequency
-      else if (matches[j].count < matches[j + 1].count) {
-        // Swap if j has lower frequency than j+1
-        SuggestionMatch temp = matches[j];
-        matches[j] = matches[j + 1];
-        matches[j + 1] = temp;
+
+      // If not found, add it
+      if (!found) {
+        // Resize if needed
+        if (freq_count >= freq_capacity) {
+          freq_capacity *= 2;
+          CommandFrequency *new_freqs = (CommandFrequency *)realloc(
+              frequencies, freq_capacity * sizeof(CommandFrequency));
+          if (!new_freqs) {
+            // Free existing array
+            for (int k = 0; k < freq_count; k++) {
+              free(frequencies[k].command);
+            }
+            free(frequencies);
+            return NULL;
+          }
+          frequencies = new_freqs;
+        }
+
+        // Add new entry
+        frequencies[freq_count].command = _strdup(cmd);
+        frequencies[freq_count].frequency = 1;
+        freq_count++;
       }
     }
   }
 
-  // Now create the actual suggestions array
-  char **suggestions = (char **)malloc(match_count * sizeof(char *));
-  if (!suggestions) {
-    fprintf(stderr, "Failed to allocate memory for suggestions\n");
-    free(matches);
-    *num_suggestions = 0;
-    return NULL;
+  // If no matches from history, try external commands
+  if (freq_count == 0 && is_external_command(prefix)) {
+    // Try external commands
+    int ext_count = 0;
+    char **ext_matches = get_external_command_matches(prefix, &ext_count);
+
+    if (ext_matches && ext_count > 0) {
+      // Return directly
+      *count = ext_count;
+      return ext_matches;
+    }
+
+    // Free matches if found
+    if (ext_matches) {
+      free(ext_matches);
+    }
   }
 
-  // Convert from matches to suggestions array
-  for (int i = 0; i < match_count; i++) {
-    suggestions[i] = _strdup(matches[i].command);
+  // If we found history matches, sort them by frequency
+  if (freq_count > 0) {
+    // Sort by frequency (descending)
+    for (int i = 0; i < freq_count - 1; i++) {
+      for (int j = 0; j < freq_count - i - 1; j++) {
+        if (frequencies[j].frequency < frequencies[j + 1].frequency) {
+          // Swap
+          CommandFrequency temp = frequencies[j];
+          frequencies[j] = frequencies[j + 1];
+          frequencies[j + 1] = temp;
+        }
+      }
+    }
+
+    // Create result array
+    char **suggestions = (char **)malloc(freq_count * sizeof(char *));
+    if (!suggestions) {
+      for (int i = 0; i < freq_count; i++) {
+        free(frequencies[i].command);
+      }
+      free(frequencies);
+      return NULL;
+    }
+
+    // Fill result array
+    for (int i = 0; i < freq_count; i++) {
+      suggestions[i] = _strdup(frequencies[i].command);
+    }
+
+    // Clean up
+    for (int i = 0; i < freq_count; i++) {
+      free(frequencies[i].command);
+    }
+    free(frequencies);
+
+    *count = freq_count;
+    return suggestions;
   }
 
-  // Free temporary matches array
-  free(matches);
-
-  *num_suggestions = match_count;
-  return suggestions;
+  // Clean up if no matches
+  free(frequencies);
+  return NULL;
 }
-
 /**
  * Helper function for case-insensitive substring search
  * Add this function to persistent_history.c
