@@ -118,6 +118,7 @@ static ShellTheme rose_pine_theme = {
     .ANSI_FOAM = "\033[38;2;156;207;216m",   // Foam color
     .ANSI_IRIS = "\033[38;2;196;167;231m",   // Iris color
     .ANSI_HIGHLIGHT = "\033[38;2;68;65;90m", // Highlight color
+    .ANSI_INVALID_COMMAND = "\033[38;2;205;120;120m",
 
     // Enable ANSI colors for Rose Pine theme
     .use_ansi_colors = TRUE,

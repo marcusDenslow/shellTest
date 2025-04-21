@@ -12,6 +12,8 @@ typedef struct {
   WORD ERROR_COLOR;     // Error messages
   WORD WARNING_COLOR;   // Warning messages
 
+  WORD INVALID_COMMAND_COLOR; // unrecognized command
+
   // UI element colors
   WORD HEADER_COLOR;      // Headers and titles
   WORD STATUS_BAR_COLOR;  // Status bar background
@@ -47,6 +49,8 @@ typedef struct {
   char ANSI_FOAM[20];      // Foam color
   char ANSI_IRIS[20];      // Iris color
   char ANSI_HIGHLIGHT[20]; // Highlight color
+
+  char ANSI_INVALID_COMMAND[20];
 
   // Flag to indicate if ANSI colors should be used
   BOOL use_ansi_colors;

@@ -4,16 +4,190 @@
  */
 
 #include "line_reader.h"
+#include "aliases.h"
 #include "bookmarks.h" // Added for bookmark support
 #include "builtins.h"  // Added for history access
+#include "common.h"
 #include "persistent_history.h"
 #include "tab_complete.h"
+#include "themes.h"
+#include <minwindef.h>
+#include <urlmon.h>
 
 // Define key codes
 #define KEY_BACKSPACE 8
 #define KEY_TAB 9
 #define KEY_ENTER 13
 #define KEY_ESCAPE 27
+
+/**
+ * Check if a command is valid
+ *
+ * @param cmd The command to check
+ * @return 1 if valid, 0 if not
+ */
+int is_valid_command(const char *cmd) {
+  if (!cmd || cmd[0] == '\0') {
+    return 0; // Empty command is not valid
+  }
+
+  // Extract just the command part (before any spaces)
+  char command_part[LSH_RL_BUFSIZE];
+  int i = 0;
+  while (cmd[i] && !isspace(cmd[i]) && i < LSH_RL_BUFSIZE - 1) {
+    command_part[i] = cmd[i];
+    i++;
+  }
+  command_part[i] = '\0';
+
+  // Check built-in commands
+  for (int i = 0; i < lsh_num_builtins(); i++) {
+    if (_stricmp(command_part, builtin_str[i]) == 0) {
+      return 1;
+    }
+  }
+
+  // Check aliases
+  AliasEntry *alias = find_alias(command_part);
+  if (alias) {
+    return 1;
+  }
+
+  // Check if it's an executable in PATH
+  // We'll use a simplified approach - check if the file exists
+  char path_buffer[MAX_PATH];
+
+  // First check if it's an absolute or relative path
+  if (strchr(command_part, '\\') || strchr(command_part, '/')) {
+    // Path contains slashes, check if file exists
+    if (GetFileAttributes(command_part) != INVALID_FILE_ATTRIBUTES) {
+      return 1;
+    }
+  } else {
+    // Check in current directory
+    if (GetFileAttributes(command_part) != INVALID_FILE_ATTRIBUTES) {
+      return 1;
+    }
+
+    // Check in PATH directories
+    char *path_env = getenv("PATH");
+    if (!path_env) {
+      return 0; // No PATH defined
+    }
+
+    char *path_copy = _strdup(path_env);
+    if (!path_copy) {
+      return 0; // Memory allocation error
+    }
+
+    char *token, *context;
+    token = strtok_s(path_copy, ";", &context);
+    while (token) {
+      // Construct full path to check
+      _snprintf(path_buffer, MAX_PATH, "%s\\%s.exe", token, command_part);
+      if (GetFileAttributes(path_buffer) != INVALID_FILE_ATTRIBUTES) {
+        free(path_copy);
+        return 1;
+      }
+
+      // Try without .exe extension
+      _snprintf(path_buffer, MAX_PATH, "%s\\%s", token, command_part);
+      if (GetFileAttributes(path_buffer) != INVALID_FILE_ATTRIBUTES) {
+        free(path_copy);
+        return 1;
+      }
+
+      token = strtok_s(NULL, ";", &context);
+    }
+
+    free(path_copy);
+  }
+
+  return 0; // Command not found
+}
+
+/**
+ * Update command display based on validity status
+ * Redraws the entire command line if validity has changed
+ *
+ * @param buffer The current command buffer
+ * @param position Current cursor position
+ * @param hConsole Console handle
+ * @param promptEndPos Starting position of command
+ * @param previousValid Previous validity state
+ * @return New validity state
+ */
+
+int update_command_validity(const char *buffer, int position, HANDLE hConsole,
+                            COORD promptEndPos, int previousValid) {
+  // Check if the command is valid
+  int isValid = is_valid_command(buffer);
+
+  // If validity changed, redraw the entire command
+  if (isValid != previousValid) {
+    // Save original cursor info
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    GetConsoleScreenBufferInfo(hConsole, &csbi);
+    CONSOLE_CURSOR_INFO cursorInfo;
+    GetConsoleCursorInfo(hConsole, &cursorInfo);
+    BOOL originalCursorVisible = cursorInfo.bVisible;
+
+    // Hide cursor during redraw
+    cursorInfo.bVisible = FALSE;
+    SetConsoleCursorInfo(hConsole, &cursorInfo);
+
+    // Move to beginning of command
+    SetConsoleCursorPosition(hConsole, promptEndPos);
+
+    // Clear the line
+    DWORD written;
+    FillConsoleOutputCharacter(hConsole, ' ', strlen(buffer) + 5, promptEndPos,
+                               &written);
+
+    // Set color based on validity - check if using ANSI colors
+    if (current_theme.use_ansi_colors) {
+      // Use ANSI color codes for true color
+      if (isValid) {
+        // Valid command - use theme's text color
+        printf("%s", current_theme.ANSI_TEXT);
+      } else {
+        // Invalid command - use theme's soft red color
+        printf("%s", current_theme.ANSI_INVALID_COMMAND);
+      }
+
+      // Print the command
+      printf("%s", buffer);
+
+      // Reset ANSI color
+      printf("\033[0m");
+    } else {
+      // Use traditional console colors
+      if (isValid) {
+        // Valid command - use theme's primary color
+        SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+      } else {
+        // Invalid command - use theme's error color but slightly muted
+        // Create a softer version of the error color by mixing with some gray
+        SetConsoleTextAttribute(hConsole,
+                                FOREGROUND_RED | (FOREGROUND_INTENSITY >> 1));
+      }
+
+      // Rewrite the entire command using traditional APIs
+      WriteConsole(hConsole, buffer, strlen(buffer), &written, NULL);
+    }
+
+    // Restore cursor position
+    COORD newPos = promptEndPos;
+    newPos.X += position;
+    SetConsoleCursorPosition(hConsole, newPos);
+
+    // Restore cursor visibility
+    cursorInfo.bVisible = originalCursorVisible;
+    SetConsoleCursorInfo(hConsole, &cursorInfo);
+  }
+
+  return isValid;
+}
 
 /**
  * Try to complete a bookmark name if the command is 'goto' or 'unbookmark'
@@ -57,6 +231,9 @@ char *lsh_read_line(void) {
   HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
   CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
   WORD originalAttributes;
+
+  // Track command validity
+  int commandValid = 0;
 
   // For tab completion cycling
   static int tab_index = 0;
@@ -114,6 +291,10 @@ char *lsh_read_line(void) {
 
   // Apply new console mode
   SetConsoleMode(hStdin, newMode);
+
+  // Initialize command validity (empty command is invalid)
+  commandValid = update_command_validity(buffer, position, hConsole,
+                                         promptEndPos, commandValid);
 
   // Main input loop
   int c;
@@ -177,8 +358,21 @@ char *lsh_read_line(void) {
           showing_history_suggestion = 1; // This is a history-based suggestion
         }
 
-        // Reset color
-        SetConsoleTextAttribute(hConsole, originalAttributes);
+        // Reset color based on command validity
+        if (current_theme.use_ansi_colors) {
+          if (commandValid) {
+            printf("%s", current_theme.ANSI_TEXT);
+          } else {
+            printf("%s", current_theme.ANSI_INVALID_COMMAND);
+          }
+        } else {
+          if (commandValid) {
+            SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+          } else {
+            SetConsoleTextAttribute(hConsole,
+                                    FOREGROUND_RED | (FOREGROUND_BLUE >> 1));
+          }
+        }
 
         // Free all but the first suggestion which is now stored in 'suggestion'
         for (int i = 1; i < freq_suggestions_count; i++) {
@@ -222,8 +416,23 @@ char *lsh_read_line(void) {
             SetConsoleTextAttribute(hConsole, FOREGROUND_INTENSITY);
             // Print only the part of the suggestion that hasn't been typed yet
             printf("%s", lastWord + strlen(currentWord));
-            // Reset color
-            SetConsoleTextAttribute(hConsole, originalAttributes);
+
+            // Reset color based on command validity
+            if (current_theme.use_ansi_colors) {
+              if (commandValid) {
+                printf("%s", current_theme.ANSI_TEXT);
+              } else {
+                printf("%s", current_theme.ANSI_INVALID_COMMAND);
+              }
+            } else {
+              if (commandValid) {
+                SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+              } else {
+                SetConsoleTextAttribute(hConsole, FOREGROUND_RED |
+                                                      (FOREGROUND_BLUE >> 1));
+              }
+            }
+
             // Reset cursor position
             SetConsoleCursorPosition(hConsole, consoleInfo.dwCursorPosition);
             showing_suggestion = 1;
@@ -346,8 +555,9 @@ char *lsh_read_line(void) {
 
           position = strlen(buffer);
 
-          // Display the command
-          printf("%s", buffer);
+          // Update command validity
+          commandValid = update_command_validity(buffer, position, hConsole,
+                                                 promptEndPos, commandValid);
 
           // Show cursor again
           cursorInfo.bVisible = originalCursorVisible;
@@ -407,8 +617,9 @@ char *lsh_read_line(void) {
 
           position = strlen(buffer);
 
-          // Display the command
-          printf("%s", buffer);
+          // Update command validity
+          commandValid = update_command_validity(buffer, position, hConsole,
+                                                 promptEndPos, commandValid);
 
           // Show cursor again
           cursorInfo.bVisible = originalCursorVisible;
@@ -437,8 +648,9 @@ char *lsh_read_line(void) {
           strcpy(buffer, original_line);
           position = strlen(buffer);
 
-          // Display the original input
-          printf("%s", buffer);
+          // Update command validity
+          commandValid = update_command_validity(buffer, position, hConsole,
+                                                 promptEndPos, commandValid);
 
           // Show cursor again
           cursorInfo.bVisible = originalCursorVisible;
@@ -475,9 +687,9 @@ char *lsh_read_line(void) {
         // Move cursor back to beginning
         SetConsoleCursorPosition(hConsole, promptEndPos);
 
-        // Print the full command
-        buffer[position] = '\0';
-        WriteConsole(hConsole, buffer, strlen(buffer), &numCharsWritten, NULL);
+        // Update command validity
+        commandValid = update_command_validity(buffer, position, hConsole,
+                                               promptEndPos, commandValid);
 
         // Restore cursor visibility
         cursorInfo.bVisible = originalCursorVisible;
@@ -618,9 +830,9 @@ char *lsh_read_line(void) {
         // Move cursor back to beginning
         SetConsoleCursorPosition(hConsole, promptEndPos);
 
-        // Print the full command with the accepted match
-        buffer[position] = '\0';
-        WriteConsole(hConsole, buffer, strlen(buffer), &numCharsWritten, NULL);
+        // Update command validity
+        commandValid = update_command_validity(buffer, position, hConsole,
+                                               promptEndPos, commandValid);
 
         // Restore cursor visibility
         cursorInfo.bVisible = originalCursorVisible;
@@ -711,25 +923,12 @@ char *lsh_read_line(void) {
             memmove(buffer + word_start, buffer + position,
                     strlen(buffer) - position + 1);
 
-            // Calculate length of text after cursor
-            int textAfterLen = strlen(buffer + word_start);
-
-            // Print the rest of the line and some spaces to erase old content
-            printf("%s", buffer + word_start);
-            for (int i = 0; i < chars_to_delete; i++) {
-              putchar(' ');
-            }
-
-            // Move cursor back to the correct position
-            COORD finalPos = newPos;
-            finalPos.X += textAfterLen;
-            SetConsoleCursorPosition(hConsole, finalPos);
-
-            // Move cursor back to where the word was deleted
-            SetConsoleCursorPosition(hConsole, newPos);
-
             // Update position
             position = word_start;
+
+            // Update command validity
+            commandValid = update_command_validity(buffer, position, hConsole,
+                                                   promptEndPos, commandValid);
 
             // Restore cursor visibility
             cursorInfo.bVisible = originalCursorVisible;
@@ -756,8 +955,9 @@ char *lsh_read_line(void) {
           strcat(buffer, last_tab_prefix);
           position = tab_word_start + strlen(last_tab_prefix);
 
-          // Print the original input
-          printf("%s", buffer);
+          // Update command validity
+          commandValid = update_command_validity(buffer, position, hConsole,
+                                                 promptEndPos, commandValid);
 
           // Reset tab cycling
           for (int i = 0; i < tab_num_matches; i++) {
@@ -771,8 +971,12 @@ char *lsh_read_line(void) {
         } else if (position == strlen(buffer)) {
           // At end of line, backspace is simpler
           position--;
-          printf("\b \b"); // Move back, erase, move back
           buffer[position] = '\0';
+          printf("\b \b"); // Move back, erase, move back
+
+          // Update command validity
+          commandValid = update_command_validity(buffer, position, hConsole,
+                                                 promptEndPos, commandValid);
         } else {
           // Backspace in middle of line
           // Get current cursor position
@@ -796,16 +1000,9 @@ char *lsh_read_line(void) {
           memmove(buffer + position, buffer + position + 1,
                   strlen(buffer) - position);
 
-          // Print rest of line and a space to erase last character
-          printf("%s ", buffer + position);
-
-          // Move cursor back to the correct position
-          COORD finalPos = newPos;
-          finalPos.X += strlen(buffer + position) + 1;
-          SetConsoleCursorPosition(hConsole, finalPos);
-
-          // Move cursor back to where the character was deleted
-          SetConsoleCursorPosition(hConsole, newPos);
+          // Update command validity
+          commandValid = update_command_validity(buffer, position, hConsole,
+                                                 promptEndPos, commandValid);
 
           // Restore cursor visibility
           cursorInfo.bVisible = originalCursorVisible;
@@ -829,6 +1026,10 @@ char *lsh_read_line(void) {
                                   originalAttributes)) {
         // Update position to end of the completed bookmark
         position = strlen(buffer);
+
+        // Update command validity
+        commandValid = update_command_validity(buffer, position, hConsole,
+                                               promptEndPos, commandValid);
         continue;
       }
 
@@ -869,9 +1070,12 @@ char *lsh_read_line(void) {
           putchar(' ');
         }
 
-        // Move back to beginning of line and display buffer
+        // Move back to beginning of line
         SetConsoleCursorPosition(hConsole, promptEndPos);
-        printf("%s", buffer);
+
+        // Update command validity
+        commandValid = update_command_validity(buffer, position, hConsole,
+                                               promptEndPos, commandValid);
 
         // Free suggestion
         free(suggestion);
@@ -944,10 +1148,27 @@ char *lsh_read_line(void) {
         tab_index = (tab_index + 1) % tab_num_matches;
       }
 
-      // Display the current match
+      // Check if the completed command would be valid
+      char temp_buffer[LSH_RL_BUFSIZE];
+      strcpy(temp_buffer, original_input);
+      strcat(temp_buffer, tab_matches[tab_index]);
+      int temp_valid = is_valid_command(temp_buffer);
+
+      // Choose color based on validity
+      WORD display_color;
+
+      if (temp_valid) {
+        // Valid command - use theme's primary color
+        display_color = current_theme.PRIMARY_COLOR;
+      } else {
+        // Invalid command - use a softer red
+        display_color = FOREGROUND_RED | (FOREGROUND_BLUE >> 1);
+      }
+
+      // Display the current match with appropriate color
       redraw_tab_suggestion(hConsole, promptEndPos, original_input,
                             tab_matches[tab_index], last_tab_prefix, tab_index,
-                            tab_num_matches, originalAttributes);
+                            tab_num_matches, display_color);
 
       // Reset execution flag when using Tab
       ready_to_execute = 0;
@@ -963,7 +1184,29 @@ char *lsh_read_line(void) {
         buffer[position] = c;
         position++;
         buffer[position] = '\0';
-        putchar(c); // Echo character
+
+        // Set color based on current validity
+        if (current_theme.use_ansi_colors) {
+          if (commandValid) {
+            printf("%s", current_theme.ANSI_TEXT);
+          } else {
+            printf("%s", current_theme.ANSI_INVALID_COMMAND);
+          }
+        } else {
+          if (commandValid) {
+            SetConsoleTextAttribute(hConsole, current_theme.PRIMARY_COLOR);
+          } else {
+            SetConsoleTextAttribute(hConsole,
+                                    FOREGROUND_RED | (FOREGROUND_BLUE >> 1));
+          }
+        }
+
+        // Echo character
+        putchar(c);
+
+        // Update command validity
+        commandValid = update_command_validity(buffer, position, hConsole,
+                                               promptEndPos, commandValid);
       } else {
         // Cursor in middle of line - insert character
 
@@ -982,15 +1225,11 @@ char *lsh_read_line(void) {
         memmove(buffer + position + 1, buffer + position,
                 strlen(buffer) - position + 1);
         buffer[position] = c;
-
-        // Display the new character and text after it
-        printf("%c%s", c, buffer + position + 1);
-
-        // Move cursor back to position right after the inserted char
         position++;
-        COORD newPos = csbi.dwCursorPosition;
-        newPos.X = promptEndPos.X + position;
-        SetConsoleCursorPosition(hConsole, newPos);
+
+        // Update command validity
+        commandValid = update_command_validity(buffer, position, hConsole,
+                                               promptEndPos, commandValid);
 
         // Restore cursor visibility
         cursorInfo.bVisible = originalCursorVisible;
