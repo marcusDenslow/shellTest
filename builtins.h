@@ -83,6 +83,7 @@ int lsh_self_destruct();
 int lsh_theme(char **args);
 int lsh_loc(char **args);
 int lsh_git_status(char **args);
+int lsh_gg(char **args);
 
 // Commands with structured output
 TableData *lsh_dir_structured(char **args);

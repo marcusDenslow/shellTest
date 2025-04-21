@@ -637,10 +637,6 @@ void get_path_display(const char *cwd, char *parent_dir_name,
 /**
  * Main shell loop (updated with persistent history support)
  */
-
-/**
- * Main shell loop (updated with persistent history support)
- */
 void lsh_loop(void) {
   char *line;
   char ***commands;
@@ -648,6 +644,7 @@ void lsh_loop(void) {
   char cwd[1024];
   char prompt_path[1024];
   char git_info[128];
+  char git_url[1024] = "";
   char username[256];
 
   // Static variables to cache Git information
@@ -698,6 +695,7 @@ void lsh_loop(void) {
   do {
     // Clear git_info for this iteration
     git_info[0] = '\0';
+    git_url[0] = '\0';
 
     // Get current console info
     CONSOLE_SCREEN_BUFFER_INFO csbi;
@@ -730,7 +728,12 @@ void lsh_loop(void) {
       char current_dir[256] = "";
       get_path_display(cwd, parent_dir, current_dir, sizeof(parent_dir));
 
-      // Check for Git info if directory has changed
+      // Check for Git info
+      char git_branch[64] = "";
+      char git_repo[64] = "";
+      int is_dirty = 0;
+      int in_git_repo = 0;
+
       if (directory_changed) {
         // Update last directory
         strcpy(last_directory, cwd);
@@ -740,9 +743,6 @@ void lsh_loop(void) {
         cached_in_git_repo = 0;
 
         // Check if we're in a Git repository
-        char git_branch[64] = "";
-        char git_repo[64] = "";
-        int is_dirty = 0;
         cached_in_git_repo =
             get_git_branch(git_branch, sizeof(git_branch), &is_dirty);
 
@@ -758,6 +758,69 @@ void lsh_loop(void) {
             snprintf(cached_git_info, sizeof(cached_git_info), " git:(%s%s)",
                      git_branch, is_dirty ? "*" : "");
           }
+        }
+      } else if (cached_in_git_repo) {
+        // Use cached info for branch/repo names, but still populate git_branch
+        get_git_branch(git_branch, sizeof(git_branch), &is_dirty);
+        get_git_repo_name(git_repo, sizeof(git_repo));
+      }
+
+      // Set in_git_repo from cached value
+      in_git_repo = cached_in_git_repo;
+
+      // Always get Git remote URL if we're in a repository
+      // This ensures the URL is available for every prompt, not just when
+      // directory changes
+      if (in_git_repo) {
+        char cmd[1024] = "";
+        FILE *fp;
+        snprintf(cmd, sizeof(cmd), "git config --get remote.origin.url 2>nul");
+        fp = _popen(cmd, "r");
+        if (fp) {
+          char origin_url[1024] = "";
+          if (fgets(origin_url, sizeof(origin_url), fp)) {
+            // Remove newline
+            size_t len = strlen(origin_url);
+            if (len > 0 && origin_url[len - 1] == '\n') {
+              origin_url[len - 1] = '\0';
+            }
+
+            // Convert SSH URLs to HTTPS URLs if needed
+            if (strncmp(origin_url, "git@", 4) == 0) {
+              // SSH format: git@github.com:username/repo.git
+              char *domain_start = origin_url + 4;
+              char *repo_path = strchr(domain_start, ':');
+
+              if (repo_path) {
+                *repo_path = '\0'; // Terminate the domain part
+                repo_path++;       // Move past the colon
+
+                // Remove .git suffix if present
+                char *git_suffix = strstr(repo_path, ".git");
+                if (git_suffix) {
+                  *git_suffix = '\0';
+                }
+
+                // Construct HTTPS URL
+                snprintf(git_url, sizeof(git_url), "https://%s/%s",
+                         domain_start, repo_path);
+              } else {
+                // Fallback - just use the original
+                strcpy(git_url, origin_url);
+              }
+            } else if (strncmp(origin_url, "https://", 8) == 0) {
+              // Already HTTPS URL, just remove .git suffix if present
+              char *git_suffix = strstr(origin_url, ".git");
+              if (git_suffix) {
+                *git_suffix = '\0';
+              }
+              strcpy(git_url, origin_url);
+            } else {
+              // Unknown format, use as-is
+              strcpy(git_url, origin_url);
+            }
+          }
+          _pclose(fp);
         }
       }
 
@@ -787,24 +850,52 @@ void lsh_loop(void) {
           // Git syntax in Pine color (soft blue)
           printf("%s git:(", current_theme.ANSI_PINE);
 
-          // Repository name in Love color (soft red)
-          printf("%s", current_theme.ANSI_LOVE);
+          // Repository name in Love color (soft red) with clickable link if URL
+          // is available
+          if (git_url[0] != '\0') {
+            // Extract repo and branch info for the link text
+            char repo_branch[128] = "";
+            char *start = strstr(cached_git_info, "(");
+            char *end = strstr(cached_git_info, ")");
 
-          // Extract repository and branch name from cached_git_info
-          char repo_branch[128] = "";
+            if (start && end && end > start) {
+              // Copy the content between parentheses for link text
+              strncpy(repo_branch, start + 1, end - start - 1);
+              repo_branch[end - start - 1] = '\0';
 
-          // Git info format is " git:(repo branch*)" or " git:(branch*)"
-          // Extract content inside the parentheses
-          char *start = strstr(cached_git_info, "(");
-          char *end = strstr(cached_git_info, ")");
+              // Create a clickable link using OSC 8 escape sequence - broken
+              // into separate printf calls
+              printf("%s", current_theme.ANSI_LOVE);
+              printf("\033]8;;%s\033\\", git_url); // Start hyperlink
+              printf("%s", repo_branch);           // Link text
+              printf("\033]8;;\033\\");            // End hyperlink
+              printf("%s", current_theme.ANSI_PINE);
+            } else {
+              // Fallback to non-link display if parsing fails
+              printf("%s", current_theme.ANSI_LOVE);
 
-          if (start && end && end > start) {
-            // Copy the content between parentheses
-            strncpy(repo_branch, start + 1, end - start - 1);
-            repo_branch[end - start - 1] = '\0';
+              // Print the repo/branch info
+              if (start && end && end > start) {
+                char repo_branch[128] = "";
+                strncpy(repo_branch, start + 1, end - start - 1);
+                repo_branch[end - start - 1] = '\0';
+                printf("%s", repo_branch);
+              }
+            }
+          } else {
+            // No URL available, print without link
+            printf("%s", current_theme.ANSI_LOVE);
 
             // Print the repo/branch info
-            printf("%s", repo_branch);
+            char *start = strstr(cached_git_info, "(");
+            char *end = strstr(cached_git_info, ")");
+
+            if (start && end && end > start) {
+              char repo_branch[128] = "";
+              strncpy(repo_branch, start + 1, end - start - 1);
+              repo_branch[end - start - 1] = '\0';
+              printf("%s", repo_branch);
+            }
           }
 
           // Closing parenthesis in Pine color (soft blue)
@@ -827,6 +918,7 @@ void lsh_loop(void) {
 
           SetConsoleTextAttribute(hConsole, current_theme.PROMPT_COLOR);
 
+          // Extract repository and branch name
           char repo_branch[128] = "";
           char *start = strstr(cached_git_info, "(");
           char *end = strstr(cached_git_info, ")");
@@ -834,7 +926,16 @@ void lsh_loop(void) {
           if (start && end && end > start) {
             strncpy(repo_branch, start + 1, end - start - 1);
             repo_branch[end - start - 1] = '\0';
-            printf("%s", repo_branch);
+
+            // If we have a git URL, make the repo name clickable
+            if (git_url[0] != '\0') {
+              // Create a clickable link using OSC 8 escape sequence
+              printf("\033]8;;%s\033\\", git_url); // Start hyperlink
+              printf("%s", repo_branch);           // Display link text
+              printf("\033]8;;\033\\");            // End hyperlink
+            } else {
+              printf("%s", repo_branch);
+            }
           }
 
           SetConsoleTextAttribute(hConsole, current_theme.ACCENT_COLOR);

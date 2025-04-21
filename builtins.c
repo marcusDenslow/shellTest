@@ -80,7 +80,7 @@ char *builtin_str[] = {
     "bookmark", "bookmarks", "goto",        "unbookmark",
     "weather",  "grep",      "cities",      "fzf",
     "ripgrep",  "clip",      "echo",        "self-destruct",
-    "theme",    "loc",       "gs",
+    "theme",    "loc",       "gs",          "gg",
 };
 
 // Add to the builtin_func array:
@@ -127,10 +127,339 @@ int (*builtin_func[])(char **) = {
     &lsh_theme,
     &lsh_loc,
     &lsh_git_status,
+    &lsh_gg,
 };
 
 // Return the number of built-in commands
 int lsh_num_builtins() { return sizeof(builtin_str) / sizeof(char *); }
+
+int lsh_gg(char **args) {
+  char repo_name[256] = "";
+  char git_url[1024] = "";
+  char origin_url[1024] = "";
+  char repo_root[1024] = "";
+  char cmd[1024] = "";
+  char relative_path[1024] = "";
+  char final_url[2048] = "";
+  char original_dir[1024] = "";
+  char target_dir[1024] = "";
+  FILE *fp;
+  BOOL success = FALSE;
+  BOOL changed_dir = FALSE;
+  BOOL found_repo = FALSE;
+  int arg_offset =
+      0; // Used to track which arg is the file/folder when a repo is specified
+
+  // Get handle to console for output
+  HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+  WORD originalAttributes;
+
+  // Get original console attributes
+  CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
+  GetConsoleScreenBufferInfo(hConsole, &consoleInfo);
+  originalAttributes = consoleInfo.wAttributes;
+
+  // Save current directory to return to it later
+  if (_getcwd(original_dir, sizeof(original_dir)) == NULL) {
+    SetConsoleTextAttribute(hConsole, current_theme.ERROR_COLOR);
+    fprintf(stderr, "Error: Could not get current directory\n");
+    SetConsoleTextAttribute(hConsole, originalAttributes);
+    return 1;
+  }
+
+  // PRIORITY 1: Check if the first argument is a directory and a Git repo
+  if (args[1] != NULL) {
+    // Handle the case where the first argument might be a path to a git repo
+    char possible_repo_path[1024] = "";
+
+    // Get absolute path for the argument
+    if (args[1][0] == '/' || args[1][0] == '\\' ||
+        (isalpha(args[1][0]) && args[1][1] == ':')) {
+      // Already absolute path
+      strcpy(possible_repo_path, args[1]);
+    } else {
+      // Relative path - get current directory and append
+      snprintf(possible_repo_path, sizeof(possible_repo_path), "%s\\%s",
+               original_dir, args[1]);
+    }
+
+    // Remove trailing slash if present
+    size_t path_len = strlen(possible_repo_path);
+    if (path_len > 0 && (possible_repo_path[path_len - 1] == '/' ||
+                         possible_repo_path[path_len - 1] == '\\')) {
+      possible_repo_path[path_len - 1] = '\0';
+    }
+
+    // Check if the path exists and is a directory
+    DWORD attr = GetFileAttributes(possible_repo_path);
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+      // Try changing to this directory
+      if (_chdir(possible_repo_path) == 0) {
+        changed_dir = TRUE;
+        strcpy(target_dir, possible_repo_path);
+
+        // Now check if this is a git repository
+        char branch_name[128] = "";
+        int is_dirty = 0;
+        if (get_git_branch(branch_name, sizeof(branch_name), &is_dirty)) {
+          found_repo = TRUE;
+
+          // The first argument was the repo - set arg_offset to look for file
+          // arguments
+          arg_offset = 1;
+        }
+      }
+    }
+  }
+
+  // PRIORITY 2: If no repo found in argument, check current directory
+  if (!found_repo) {
+    // Return to original directory if we changed it
+    if (changed_dir) {
+      _chdir(original_dir);
+      changed_dir = FALSE;
+    }
+
+    // Check if current directory is a git repo
+    char branch_name[128] = "";
+    int is_dirty = 0;
+    if (get_git_branch(branch_name, sizeof(branch_name), &is_dirty)) {
+      found_repo = TRUE;
+      strcpy(target_dir, original_dir);
+      // No offset - all arguments are potential files
+      arg_offset = 0;
+    }
+  }
+
+  // If we still don't have a git repo, show error and exit
+  if (!found_repo) {
+    SetConsoleTextAttribute(hConsole, current_theme.ERROR_COLOR);
+    fprintf(stderr, "Error: No Git repository found. Usage:\n");
+    fprintf(stderr, "  gg                     - Open current git repository\n");
+    fprintf(stderr,
+            "  gg repo-directory      - Open the specified git repository\n");
+    fprintf(
+        stderr,
+        "  gg repo-directory file - Open specific file in the repository\n");
+    SetConsoleTextAttribute(hConsole, originalAttributes);
+
+    // Return to original directory if we changed it
+    if (changed_dir) {
+      _chdir(original_dir);
+    }
+    return 1;
+  }
+
+  // We have a valid repo at this point
+  // Get repository name
+  if (!get_git_repo_name(repo_name, sizeof(repo_name))) {
+    strcpy(repo_name, "unknown");
+  }
+
+  // Get the repository root path
+  snprintf(cmd, sizeof(cmd), "git rev-parse --show-toplevel 2>nul");
+  fp = _popen(cmd, "r");
+  if (fp) {
+    if (fgets(repo_root, sizeof(repo_root), fp)) {
+      // Remove newline
+      size_t len = strlen(repo_root);
+      if (len > 0 && repo_root[len - 1] == '\n') {
+        repo_root[len - 1] = '\0';
+      }
+      // Convert forward slashes to backslashes for consistency
+      for (char *p = repo_root; *p; p++) {
+        if (*p == '/')
+          *p = '\\';
+      }
+    }
+    _pclose(fp);
+  }
+
+  // Get branch name again (in case we've changed directories)
+  char branch_name[128] = "";
+  int is_dirty = 0;
+  get_git_branch(branch_name, sizeof(branch_name), &is_dirty);
+
+  // Try to get the remote origin URL
+  snprintf(cmd, sizeof(cmd), "git config --get remote.origin.url 2>nul");
+  fp = _popen(cmd, "r");
+  if (fp) {
+    if (fgets(origin_url, sizeof(origin_url), fp)) {
+      // Remove newline
+      size_t len = strlen(origin_url);
+      if (len > 0 && origin_url[len - 1] == '\n') {
+        origin_url[len - 1] = '\0';
+      }
+      success = TRUE;
+    }
+    _pclose(fp);
+  }
+
+  if (!success || strlen(origin_url) == 0) {
+    SetConsoleTextAttribute(hConsole, current_theme.ERROR_COLOR);
+    fprintf(stderr, "Error: Repository doesn't have a remote origin URL\n");
+    SetConsoleTextAttribute(hConsole, originalAttributes);
+
+    // Return to original directory if we changed it
+    if (changed_dir) {
+      _chdir(original_dir);
+    }
+    return 1;
+  }
+
+  // Convert SSH URLs to HTTPS URLs if needed
+  if (strncmp(origin_url, "git@", 4) == 0) {
+    // SSH format: git@github.com:username/repo.git
+    char *domain_start = origin_url + 4;
+    char *repo_path = strchr(domain_start, ':');
+
+    if (repo_path) {
+      *repo_path = '\0'; // Terminate the domain part
+      repo_path++;       // Move past the colon
+
+      // Remove .git suffix if present
+      char *git_suffix = strstr(repo_path, ".git");
+      if (git_suffix) {
+        *git_suffix = '\0';
+      }
+
+      // Construct HTTPS URL
+      snprintf(git_url, sizeof(git_url), "https://%s/%s", domain_start,
+               repo_path);
+    } else {
+      // Fallback - just use the original
+      strcpy(git_url, origin_url);
+    }
+  } else if (strncmp(origin_url, "https://", 8) == 0) {
+    // Already HTTPS URL, just remove .git suffix if present
+    char *git_suffix = strstr(origin_url, ".git");
+    if (git_suffix) {
+      *git_suffix = '\0';
+    }
+    strcpy(git_url, origin_url);
+  } else {
+    // Unknown format, use as-is
+    strcpy(git_url, origin_url);
+  }
+
+  // Process specific file/folder argument if provided
+  if (args[1 + arg_offset] != NULL) {
+    char arg_path[1024] = "";
+    char current_dir[1024] = "";
+
+    // Get current directory (which may have changed)
+    if (_getcwd(current_dir, sizeof(current_dir)) == NULL) {
+      strcpy(current_dir, repo_root); // Fallback to repo root
+    }
+
+    // Get absolute path for the argument
+    if (args[1 + arg_offset][0] == '/' || args[1 + arg_offset][0] == '\\' ||
+        (isalpha(args[1 + arg_offset][0]) && args[1 + arg_offset][1] == ':')) {
+      // Already absolute path
+      strcpy(arg_path, args[1 + arg_offset]);
+    } else {
+      // Relative path - append to current directory
+      snprintf(arg_path, sizeof(arg_path), "%s\\%s", current_dir,
+               args[1 + arg_offset]);
+    }
+
+    // Convert forward slashes to backslashes for consistency
+    for (char *p = arg_path; *p; p++) {
+      if (*p == '/')
+        *p = '\\';
+    }
+
+    // Check if repo_root is actually set
+    if (strlen(repo_root) == 0) {
+      SetConsoleTextAttribute(hConsole, current_theme.ERROR_COLOR);
+      fprintf(stderr, "Error: Could not determine Git repository root\n");
+      SetConsoleTextAttribute(hConsole, originalAttributes);
+
+      // Return to original directory if we changed it
+      if (changed_dir) {
+        _chdir(original_dir);
+      }
+      return 1;
+    }
+
+    // Calculate relative path from repo root
+    if (strncmp(arg_path, repo_root, strlen(repo_root)) == 0) {
+      // Path is within the repository
+      strcpy(relative_path, arg_path + strlen(repo_root));
+
+      // Remove leading slash if present
+      if (relative_path[0] == '\\' || relative_path[0] == '/') {
+        memmove(relative_path, relative_path + 1, strlen(relative_path) + 1);
+      }
+
+      // Convert backslashes to forward slashes for URL
+      for (char *p = relative_path; *p; p++) {
+        if (*p == '\\')
+          *p = '/';
+      }
+    } else {
+      SetConsoleTextAttribute(hConsole, current_theme.ERROR_COLOR);
+      fprintf(stderr, "Error: Path '%s' is not within the Git repository\n",
+              args[1 + arg_offset]);
+      SetConsoleTextAttribute(hConsole, originalAttributes);
+
+      // Return to original directory if we changed it
+      if (changed_dir) {
+        _chdir(original_dir);
+      }
+      return 1;
+    }
+
+    // Check if it's a file or directory
+    DWORD attr = GetFileAttributes(arg_path);
+    if (attr != INVALID_FILE_ATTRIBUTES) {
+      if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+        // It's a directory - append tree/branch/path
+        sprintf(final_url, "%s/tree/%s/%s", git_url, branch_name,
+                relative_path);
+      } else {
+        // It's a file - append blob/branch/path
+        sprintf(final_url, "%s/blob/%s/%s", git_url, branch_name,
+                relative_path);
+      }
+    } else {
+      SetConsoleTextAttribute(hConsole, current_theme.ERROR_COLOR);
+      fprintf(stderr, "Error: Could not access '%s'\n", args[1 + arg_offset]);
+      SetConsoleTextAttribute(hConsole, originalAttributes);
+
+      // Return to original directory if we changed it
+      if (changed_dir) {
+        _chdir(original_dir);
+      }
+      return 1;
+    }
+  } else {
+    // No arguments - just use the repository URL
+    strcpy(final_url, git_url);
+  }
+
+  SetConsoleTextAttribute(hConsole, current_theme.SUCCESS_COLOR);
+  printf("Opening: %s\n", final_url);
+  SetConsoleTextAttribute(hConsole, originalAttributes);
+
+  // Open URL using ShellExecute
+  HINSTANCE result =
+      ShellExecute(NULL, "open", final_url, NULL, NULL, SW_SHOWNORMAL);
+  if ((intptr_t)result <= 32) {
+    // Error occurred
+    SetConsoleTextAttribute(hConsole, current_theme.ERROR_COLOR);
+    fprintf(stderr, "Error: Failed to open browser (error code: %ld)\n",
+            (intptr_t)result);
+    SetConsoleTextAttribute(hConsole, originalAttributes);
+  }
+
+  // Return to original directory if we changed it
+  if (changed_dir) {
+    _chdir(original_dir);
+  }
+
+  return 1;
+}
 
 /**
  * Command handler for the "aliases" command
